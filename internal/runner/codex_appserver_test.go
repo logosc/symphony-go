@@ -77,7 +77,7 @@ func writeFakeAppServer(t *testing.T, dir string, frames []string) string {
 }
 
 // shellQuote returns s wrapped in single quotes, escaping internal single
-// quotes via the standard `'\''` idiom.
+// quotes via the standard `'\”` idiom.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -177,6 +177,7 @@ func TestCodexAppServer_CancelTimesOut(t *testing.T) {
 	dir := t.TempDir()
 	frames := []string{
 		rpcResponse(1, `{"protocolVersion":"1"}`),
+		"",
 		rpcResponse(2, `{"thread":{"id":"th_abc"}}`),
 		// turn/start ack but no terminal event — sleep until killed.
 		rpcResponse(3, `{"turn":{"id":"tr_1"}}`),
@@ -213,8 +214,9 @@ func TestCodexAppServer_MalformedLineSkipped(t *testing.T) {
 	dir := t.TempDir()
 	frames := []string{
 		rpcResponse(1, `{"protocolVersion":"1"}`),
+		"",
 		rpcResponse(2, `{"thread":{"id":"th_abc"}}`),
-		rpcResponse(3, `{"turn":{"id":"tr_1"}}`,) +
+		rpcResponse(3, `{"turn":{"id":"tr_1"}}`) +
 			"\n" + `not-valid-json-at-all <<<` +
 			"\n" + `{"jsonrpc":"2.0","method":"item.completed","params":{"item_type":"agent_message","text":"after-bad"}}` +
 			"\n" + `{"jsonrpc":"2.0","method":"turn.completed","params":{"status":"completed"}}`,
