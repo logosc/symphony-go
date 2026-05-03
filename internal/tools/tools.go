@@ -10,6 +10,7 @@
 package tools
 
 import (
+	_ "github.com/bradleyfalzon/ghinstallation/v2"
 	_ "github.com/google/go-github/v68/github"
 	_ "golang.org/x/oauth2"
 	_ "gopkg.in/yaml.v3"
