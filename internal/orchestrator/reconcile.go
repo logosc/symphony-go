@@ -189,11 +189,12 @@ func (o *Orchestrator) reconcileOne(ctx context.Context, issue types.Issue, job 
 	// job != nil. Branch on local status.
 	switch job.Status {
 	case types.StatusPlanning:
-		// Row 7: re-run planning. We do NOT auto-resume here either —
-		// reconciliation never starts an agent. Leave label alone, dispatch
-		// loop will re-run after a manual reset to ready. Row 8: drift.
+		// Row 7: planning was interrupted. Replace label `planning → ready`
+		// and drop local state so the dispatch loop re-claims the issue
+		// and runs planning fresh on the next tick. Reconciliation never
+		// starts an agent itself.
 		if lc == strings.ToLower(rl.planning) {
-			return false, nil
+			return o.reconcileRetryPlanning(ctx, issue, job)
 		}
 		// Row 8: label drift.
 		return o.driftBlock(ctx, issue, job, lc, "local=planning")
@@ -293,6 +294,36 @@ func capReconcileComment(s string) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// reconcileRetryPlanning implements SPEC §7 row 7. Planning was
+// interrupted (process died after claim, before posting a plan, or after
+// posting a plan but before transitioning to awaiting/implementing).
+// Reset the GitHub label `planning → ready`, drop the local job state,
+// and post a brief comment. The dispatch loop reclaims the `ready`
+// label on the next tick and runs planning fresh. Reconciliation never
+// starts an agent itself, satisfying both "re-run planning from scratch"
+// (SPEC §7) and "Reconciliation never starts an agent" (SPEC §7 rules).
+//
+// The previous plan comment, if any, is left in place. We do not edit it
+// because the github.Client interface deliberately omits comment-edit
+// (M7 follow-up); a fresh planning run will post a new plan comment that
+// supersedes it visually.
+func (o *Orchestrator) reconcileRetryPlanning(ctx context.Context, issue types.Issue, job *types.Job) (bool, error) {
+	cfg := o.deps.Config
+	if err := o.deps.GitHub.ReplaceStateLabel(ctx, issue.Number,
+		[]string{cfg.Labels.Planning}, []string{cfg.Labels.Ready}); err != nil {
+		return false, err
+	}
+	body := capReconcileComment("[symphony-go reconcile] planning was interrupted; resetting label to ready and retrying.")
+	if _, err := o.deps.GitHub.PostIssueComment(ctx, issue.Number, body); err != nil {
+		o.deps.Logger.Warn("reconcile: post comment", "issue", issue.Number, "err", err)
+	}
+	if err := o.deps.State.Delete(job.IssueNumber); err != nil {
+		return false, fmt.Errorf("delete state: %w", err)
+	}
+	o.deps.Logger.Info("reconcile_action", "issue", issue.Number, "action", "retry_planning")
+	return true, nil
 }
 
 // (this trailing helper here just to keep imports honest if removed elsewhere)

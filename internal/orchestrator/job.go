@@ -106,6 +106,14 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		log.Info("worktree_created", "path", layout.RepoPath)
 	}
 
+	// Symlink subscription-mode auth (~/.claude, ~/.codex, etc.) into the
+	// agent's isolated HOME so claude/codex can read existing auth state.
+	// Idempotent; missing source paths are silently skipped. API-key mode
+	// is unaffected (handled by BuildAgentEnv allowlist instead).
+	if err := seedSubscriptionAuth(layout.HomePath); err != nil {
+		log.Warn("seed_subscription_auth", "err", err)
+	}
+
 	env := internalexec.BuildAgentEnv(cfg.Env.Allowlist, cfg.Env.BlockPatterns, os.Environ(), layout.HomePath)
 
 	// 3. after_create hook (only when newly created).
