@@ -619,14 +619,35 @@ func TestLoadGitHubAuthModes(t *testing.T) {
 			wantSubstr: "installation_id_env",
 		},
 		{
-			name: "app missing private_key_path_env",
+			name: "app missing both pem env vars",
 			github: `github:
   auth: "app"
   app_id_env: "SG_APP_ID"
   installation_id_env: "SG_INSTALL_ID"
   poll_interval_seconds: 30`,
 			wantErr:    true,
-			wantSubstr: "private_key_path_env",
+			wantSubstr: "private_key_path_env or",
+		},
+		{
+			name: "app with both path and pem env vars (mutex)",
+			github: `github:
+  auth: "app"
+  app_id_env: "SG_APP_ID"
+  installation_id_env: "SG_INSTALL_ID"
+  private_key_path_env: "SG_APP_PEM"
+  private_key_pem_env: "SG_APP_PEM_INLINE"
+  poll_interval_seconds: 30`,
+			wantErr:    true,
+			wantSubstr: "mutually exclusive",
+		},
+		{
+			name: "app with inline pem only",
+			github: `github:
+  auth: "app"
+  app_id_env: "SG_APP_ID"
+  installation_id_env: "SG_INSTALL_ID"
+  private_key_pem_env: "SG_APP_PEM_INLINE"
+  poll_interval_seconds: 30`,
 		},
 		{
 			name: "unknown auth",

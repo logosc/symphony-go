@@ -16,7 +16,9 @@ github:
   # GitHub App installation auth (uncomment after setting auth: "app"):
   # app_id_env: "SYMPHONY_GO_APP_ID"
   # installation_id_env: "SYMPHONY_GO_APP_INSTALLATION_ID"
-  # private_key_path_env: "SYMPHONY_GO_APP_PRIVATE_KEY_PATH"
+  # Exactly one of the next two is required when auth: "app":
+  # private_key_path_env: "SYMPHONY_GO_APP_PRIVATE_KEY_PATH"  # path to .pem
+  # private_key_pem_env:  "SYMPHONY_GO_APP_PRIVATE_KEY_PEM"   # inline PEM
   poll_interval_seconds: 30
 
 labels:

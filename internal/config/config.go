@@ -72,10 +72,16 @@ type GitHubConfig struct {
 	// integer installation ID. Required in `app` mode.
 	InstallationIDEnv string `yaml:"installation_id_env"`
 	// PrivateKeyPathEnv names the environment variable holding the
-	// absolute path to the App's .pem private key file. Required in
-	// `app` mode. The file is read at startup and not retained on disk
-	// after that.
+	// absolute path to the App's .pem private key file. Used in `app`
+	// mode. The file is read at startup. Mutually exclusive with
+	// PrivateKeyPEMEnv; exactly one must be set.
 	PrivateKeyPathEnv string `yaml:"private_key_path_env"`
+	// PrivateKeyPEMEnv names the environment variable whose value is
+	// the literal PEM contents (the `-----BEGIN RSA PRIVATE KEY-----`
+	// block, newlines preserved). Escape hatch for environments
+	// without a filesystem (Cloudflare Workers etc.). Mutually
+	// exclusive with PrivateKeyPathEnv.
+	PrivateKeyPEMEnv string `yaml:"private_key_pem_env"`
 	// PollIntervalSeconds is the cadence between dispatch ticks.
 	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 }
@@ -297,6 +303,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Repo.WorkflowFile == "" && cfg.Repo.WorkflowFiles.IsEmpty() {
 		cfg.Repo.WorkflowFile = "WORKFLOW.md"
+	}
+	if cfg.GitHub.Auth == "" {
+		cfg.GitHub.Auth = "pat"
 	}
 	if cfg.GitHub.TokenEnv == "" {
 		cfg.GitHub.TokenEnv = "GITHUB_TOKEN"

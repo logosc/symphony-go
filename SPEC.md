@@ -51,7 +51,18 @@ repo:
   workflow_file: "WORKFLOW.md"
 
 github:
+  # Auth modes. "pat" (default) reads a personal access token from
+  # token_env. "app" authenticates as a GitHub App installation; the App
+  # ID and installation ID come from env-var-named fields, and exactly
+  # one of private_key_path_env or private_key_pem_env supplies the PEM.
+  # See docs/github-app-setup.md.
+  auth: "pat"
   token_env: "GITHUB_TOKEN"
+  # App-mode fields (used only when auth == "app"):
+  # app_id_env:           "GITHUB_APP_ID"
+  # installation_id_env:  "GITHUB_APP_INSTALLATION_ID"
+  # private_key_path_env: "GITHUB_APP_PRIVATE_KEY_PATH"   # path to .pem
+  # private_key_pem_env:  "GITHUB_APP_PRIVATE_KEY_PEM"    # or inline PEM
   poll_interval_seconds: 30
 
 labels:

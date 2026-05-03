@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 
 	gh "github.com/logosc/symphony-go/internal/github"
 
@@ -50,22 +51,22 @@ func Doctor(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
-	// 4: GITHUB_TOKEN env var set.
-	token := os.Getenv(cfg.GitHub.TokenEnv)
-	if token == "" {
-		errs = append(errs, fmt.Errorf("doctor: env %s is empty", cfg.GitHub.TokenEnv))
+	// 4: GitHub auth — branches between PAT and App per cfg.GitHub.Auth.
+	// Surface the active mode so operators can confirm what doctor exercised.
+	client, modeSummary, authErr := doctorResolveGitHubAuth(ctx, cfg)
+	if modeSummary != "" {
+		slog.Info("doctor: github auth resolved", "summary", modeSummary)
+	}
+	if authErr != nil {
+		errs = append(errs, fmt.Errorf("doctor: github auth: %w", authErr))
 	}
 
-	// 5, 6, 7: live GitHub probes (only when we have a token).
-	if token != "" {
-		client, err := gh.NewClient(ctx, token, cfg.Repo.FullName)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("doctor: github client: %w", err))
-		} else {
-			// Cheap probe: list ready issues. Confirms repo + label existence.
-			if _, err := client.ListReadyIssues(ctx, cfg.Labels.Ready); err != nil {
-				errs = append(errs, fmt.Errorf("doctor: list ready issues: %w", err))
-			}
+	// 5, 6, 7: live GitHub probe — list ready issues exercises auth, repo
+	// reachability, and the ready label all at once.
+	if client != nil {
+		if _, err := client.ListReadyIssues(ctx, cfg.Labels.Ready); err != nil {
+			errs = append(errs, fmt.Errorf("doctor: list ready issues (is App installed on %s?): %w",
+				cfg.Repo.FullName, err))
 		}
 	}
 
@@ -238,6 +239,88 @@ func codexByLabelMaps(cfg *config.Config) map[string]config.OrderedMap[[]string]
 		"implementation_args_by_label": cfg.Codex.ImplementationArgsByLabel,
 		"review_args_by_label":         cfg.Codex.ReviewArgsByLabel,
 	}
+}
+
+// doctorResolveGitHubAuth mirrors cmd/symphony-go/main.go::buildGitHubAuth
+// but returns just the Client and a human-readable summary string. Kept
+// in this package so doctor can run without importing the cmd package.
+//
+// The summary is one of:
+//
+//	github auth: pat (token_env=GITHUB_TOKEN)
+//	github auth: app (app_id=12345, installation_id=67890)
+//
+// On error the summary may still be non-empty (so operators can see which
+// mode failed).
+func doctorResolveGitHubAuth(ctx context.Context, cfg *config.Config) (gh.Client, string, error) {
+	switch cfg.GitHub.Auth {
+	case "", "pat":
+		summary := fmt.Sprintf("github auth: pat (token_env=%s)", cfg.GitHub.TokenEnv)
+		token := os.Getenv(cfg.GitHub.TokenEnv)
+		if token == "" {
+			return nil, summary, fmt.Errorf("env %s is empty", cfg.GitHub.TokenEnv)
+		}
+		cli, err := gh.NewClient(ctx, token, cfg.Repo.FullName)
+		if err != nil {
+			return nil, summary, err
+		}
+		return cli, summary, nil
+	case "app":
+		appID, err := strconv.ParseInt(os.Getenv(cfg.GitHub.AppIDEnv), 10, 64)
+		if err != nil || appID <= 0 {
+			return nil, "github auth: app (app_id env not parseable)",
+				fmt.Errorf("github.app_id_env %q is not a positive int64 (raw=%q)", cfg.GitHub.AppIDEnv, os.Getenv(cfg.GitHub.AppIDEnv))
+		}
+		instID, err := strconv.ParseInt(os.Getenv(cfg.GitHub.InstallationIDEnv), 10, 64)
+		if err != nil || instID <= 0 {
+			return nil, fmt.Sprintf("github auth: app (app_id=%d, installation_id env not parseable)", appID),
+				fmt.Errorf("github.installation_id_env %q is not a positive int64 (raw=%q)", cfg.GitHub.InstallationIDEnv, os.Getenv(cfg.GitHub.InstallationIDEnv))
+		}
+		summary := fmt.Sprintf("github auth: app (app_id=%d, installation_id=%d)", appID, instID)
+		pemBytes, err := doctorLoadAppPEM(cfg.GitHub)
+		if err != nil {
+			return nil, summary, err
+		}
+		cli, _, err := gh.NewAppClient(ctx, gh.AppAuth{
+			AppID:          appID,
+			InstallationID: instID,
+			PrivateKeyPEM:  pemBytes,
+		}, cfg.Repo.FullName)
+		if err != nil {
+			return nil, summary, err
+		}
+		return cli, summary, nil
+	default:
+		return nil, "", fmt.Errorf("unknown github.auth %q", cfg.GitHub.Auth)
+	}
+}
+
+// doctorLoadAppPEM resolves PEM bytes from one of the two env
+// indirections; warns on broad file mode (>0600).
+func doctorLoadAppPEM(c config.GitHubConfig) ([]byte, error) {
+	if c.PrivateKeyPathEnv != "" {
+		path := os.Getenv(c.PrivateKeyPathEnv)
+		if path == "" {
+			return nil, fmt.Errorf("github.private_key_path_env %q is empty", c.PrivateKeyPathEnv)
+		}
+		if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+			slog.Warn("doctor: github app pem file is group/world-readable; recommend chmod 600",
+				"path", path, "mode", fmt.Sprintf("%#o", info.Mode().Perm()))
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %q: %w", path, err)
+		}
+		return body, nil
+	}
+	if c.PrivateKeyPEMEnv != "" {
+		raw := os.Getenv(c.PrivateKeyPEMEnv)
+		if raw == "" {
+			return nil, fmt.Errorf("github.private_key_pem_env %q is empty", c.PrivateKeyPEMEnv)
+		}
+		return []byte(raw), nil
+	}
+	return nil, fmt.Errorf("neither private_key_path_env nor private_key_pem_env is configured")
 }
 
 // pathInside is local to avoid an import cycle with config; it mirrors

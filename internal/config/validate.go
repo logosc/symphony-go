@@ -51,8 +51,15 @@ func Validate(cfg *Config) error {
 		if cfg.GitHub.InstallationIDEnv == "" {
 			return fmt.Errorf("config: github.installation_id_env is required when github.auth = \"app\"")
 		}
-		if cfg.GitHub.PrivateKeyPathEnv == "" {
-			return fmt.Errorf("config: github.private_key_path_env is required when github.auth = \"app\"")
+		// Exactly one of private_key_path_env / private_key_pem_env must
+		// be set.
+		hasPath := cfg.GitHub.PrivateKeyPathEnv != ""
+		hasPEM := cfg.GitHub.PrivateKeyPEMEnv != ""
+		if !hasPath && !hasPEM {
+			return fmt.Errorf("config: github.private_key_path_env or github.private_key_pem_env is required when github.auth = \"app\"")
+		}
+		if hasPath && hasPEM {
+			return fmt.Errorf("config: github.private_key_path_env and github.private_key_pem_env are mutually exclusive")
 		}
 	default:
 		return fmt.Errorf("config: github.auth %q must be one of \"\" (= pat), \"pat\", or \"app\"", cfg.GitHub.Auth)
