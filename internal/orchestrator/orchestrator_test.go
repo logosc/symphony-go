@@ -475,6 +475,145 @@ func TestHandoffMode(t *testing.T) {
 	}
 }
 
+// TestPerAxisWorkflowAndValidation verifies the G11+G12 wiring: a
+// two-axis config (type:code + type:research) with per-axis workflow
+// files and per-axis validation commands. Each issue is processed in
+// handoff mode and we assert the rendered prompt + the validation
+// command list reflects the resolved axis.
+func TestPerAxisWorkflowAndValidation(t *testing.T) {
+	h := newTestHarness(t)
+	h.cfg.Approval.Mode = "handoff"
+	// Simulate the parsed YAML state: scalar workflow_file empty, map
+	// populated with two axes + default. Same for validation.
+	h.cfg.Repo.WorkflowFile = ""
+	h.cfg.Repo.WorkflowFiles = config.OrderedMap[string]{
+		Keys: []string{"type:code", "type:research", "default"},
+		Values: map[string]string{
+			"type:code":     "code-axis",
+			"type:research": "research-axis",
+			"default":       "code-axis",
+		},
+	}
+	h.cfg.Validation.Commands = nil
+	h.cfg.Validation.CommandsByLabel = config.OrderedMap[[]string]{
+		Keys: []string{"type:code", "type:research", "default"},
+		Values: map[string][]string{
+			"type:code":     {"true"},
+			"type:research": {"echo research-axis"},
+			"default":       {"true"},
+		},
+	}
+
+	// Wire deps with PromptTemplates rather than the scalar PromptTemplate.
+	deps := Deps{
+		Config:       h.cfg,
+		GitHub:       h.gh,
+		State:        h.state,
+		WorkspaceMgr: h.mgr,
+		AgentRunner:  h.runner,
+		PromptTemplates: map[string]string{
+			"type:code":     "PROMPT-CODE: {{ issue.title }}",
+			"type:research": "PROMPT-RESEARCH: {{ issue.title }}",
+			"default":       "PROMPT-CODE: {{ issue.title }}",
+		},
+		PushFunc:      h.pushToBare,
+		WorkspaceRoot: h.wsRoot,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	o, err := New(deps)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Capture the planning prompts seen per issue.
+	planPrompts := make(map[int]string)
+	implPrompts := make(map[int]string)
+	axisKeysSeen := make(map[int][]string)
+	h.runner.OnRun = func(ctx context.Context, req types.RunRequest) (types.RunResult, error) {
+		axisKeysSeen[req.Issue.Number] = append(axisKeysSeen[req.Issue.Number], req.AxisKey)
+		switch req.Phase {
+		case types.PhasePlanning:
+			planPrompts[req.Issue.Number] = req.Prompt
+			return types.RunResult{Success: true, Text: canonicalPlan([]string{"a.txt"})}, nil
+		case types.PhaseImplementation:
+			implPrompts[req.Issue.Number] = req.Prompt
+			p := filepath.Join(req.RepoPath, "a.txt")
+			if err := os.WriteFile(p, []byte("body\n"), 0o644); err != nil {
+				return types.RunResult{}, err
+			}
+			return types.RunResult{Success: true, Text: "done"}, nil
+		}
+		return types.RunResult{}, fmt.Errorf("unexpected phase %q", req.Phase)
+	}
+
+	codeIss := h.seedReadyIssue(101, "code work", "type:code")
+	researchIss := h.seedReadyIssue(102, "research work", "type:research")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := o.ProcessIssue(ctx, codeIss); err != nil {
+		t.Fatalf("ProcessIssue(code): %v", err)
+	}
+	if err := o.ProcessIssue(ctx, researchIss); err != nil {
+		t.Fatalf("ProcessIssue(research): %v", err)
+	}
+
+	if !strings.Contains(planPrompts[101], "PROMPT-CODE: code work") {
+		t.Errorf("code planning prompt = %q", planPrompts[101])
+	}
+	if !strings.Contains(planPrompts[102], "PROMPT-RESEARCH: research work") {
+		t.Errorf("research planning prompt = %q", planPrompts[102])
+	}
+	if !strings.Contains(implPrompts[101], "PROMPT-CODE") {
+		t.Errorf("code impl prompt = %q", implPrompts[101])
+	}
+	if !strings.Contains(implPrompts[102], "PROMPT-RESEARCH") {
+		t.Errorf("research impl prompt = %q", implPrompts[102])
+	}
+	for _, key := range axisKeysSeen[101] {
+		if key != "type:code" {
+			t.Errorf("issue 101 saw axis_key=%q; want type:code", key)
+		}
+	}
+	for _, key := range axisKeysSeen[102] {
+		if key != "type:research" {
+			t.Errorf("issue 102 saw axis_key=%q; want type:research", key)
+		}
+	}
+
+	codeJob, _ := h.state.Load(101)
+	if codeJob.AxisKey != "type:code" || codeJob.AxisSource != "by_label" {
+		t.Errorf("code job axis = (%q,%q); want (type:code, by_label)", codeJob.AxisKey, codeJob.AxisSource)
+	}
+	researchJob, _ := h.state.Load(102)
+	if researchJob.AxisKey != "type:research" || researchJob.AxisSource != "by_label" {
+		t.Errorf("research job axis = (%q,%q); want (type:research, by_label)",
+			researchJob.AxisKey, researchJob.AxisSource)
+	}
+
+	// Both should have reached pr-ready (validation passed for both).
+	if !findLabel(h.labelsFor(101), h.cfg.Labels.PRReady) {
+		t.Errorf("code issue not pr-ready: %v", h.labelsFor(101))
+	}
+	if !findLabel(h.labelsFor(102), h.cfg.Labels.PRReady) {
+		t.Errorf("research issue not pr-ready: %v", h.labelsFor(102))
+	}
+
+	// Resolve validation commands directly via the orchestrator helper to
+	// confirm the per-axis lookup picks the correct slice.
+	codeCmds, err := o.resolveValidationCommands(codeJob)
+	if err != nil {
+		t.Fatalf("resolveValidationCommands(code): %v", err)
+	}
+	if len(codeCmds) != 1 || codeCmds[0] != "true" {
+		t.Errorf("code validation cmds = %v", codeCmds)
+	}
+	researchCmds, _ := o.resolveValidationCommands(researchJob)
+	if len(researchCmds) != 1 || researchCmds[0] != "echo research-axis" {
+		t.Errorf("research validation cmds = %v", researchCmds)
+	}
+}
+
 // TestRunOnce dispatches one issue via Run(once=true).
 func TestRunOnce(t *testing.T) {
 	h := newTestHarness(t)

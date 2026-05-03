@@ -26,41 +26,52 @@ type AppAuth struct {
 	PrivateKeyPEM  []byte
 }
 
+// AppCreds is anything that can mint a fresh, short-lived GitHub App
+// installation access token on demand. *ghinstallation.Transport satisfies
+// it. Used by callers that need a token outside the API client itself —
+// notably `git push` over HTTPS with the token in an `extraheader`.
+type AppCreds interface {
+	Token(ctx context.Context) (string, error)
+}
+
 // NewAppClient constructs a Client authenticated as a GitHub App
-// installation. The returned Client is interchangeable with one returned
-// by NewClient — it satisfies the same interface and the orchestrator
-// does not need to know which auth scheme is in use.
+// installation, plus an AppCreds source the caller can use to mint a
+// fresh installation access token (e.g. for `git push`). The returned
+// Client is interchangeable with one returned by NewClient — it satisfies
+// the same interface and the orchestrator does not need to know which
+// auth scheme is in use.
 //
 // JWT signing and installation-access-token refresh are handled
-// transparently by ghinstallation. The orchestrator never sees the
-// short-lived installation token directly, so there is no token to
-// expose to subprocess env.
+// transparently by ghinstallation. The orchestrator never persists the
+// short-lived installation token; for any operation that actually needs
+// the bearer (push), it calls AppCreds.Token(ctx) at the point of use.
 //
 // fullName must be of the form "OWNER/REPO". The App installation must
 // have access to that repository — this is not validated at construction
 // time; the first API call will surface the failure.
-func NewAppClient(ctx context.Context, auth AppAuth, fullName string) (Client, error) {
+func NewAppClient(ctx context.Context, auth AppAuth, fullName string) (Client, AppCreds, error) {
 	if auth.AppID == 0 {
-		return nil, fmt.Errorf("github: AppAuth.AppID must be non-zero")
+		return nil, nil, fmt.Errorf("github: AppAuth.AppID must be non-zero")
 	}
 	if auth.InstallationID == 0 {
-		return nil, fmt.Errorf("github: AppAuth.InstallationID must be non-zero")
+		return nil, nil, fmt.Errorf("github: AppAuth.InstallationID must be non-zero")
 	}
 	if len(auth.PrivateKeyPEM) == 0 {
-		return nil, fmt.Errorf("github: AppAuth.PrivateKeyPEM must be non-empty")
+		return nil, nil, fmt.Errorf("github: AppAuth.PrivateKeyPEM must be non-empty")
 	}
 	owner, repo, err := parseFullName(fullName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	itr, err := ghinstallation.New(http.DefaultTransport, auth.AppID, auth.InstallationID, auth.PrivateKeyPEM)
 	if err != nil {
-		return nil, fmt.Errorf("github: ghinstallation: %w", err)
+		return nil, nil, fmt.Errorf("github: ghinstallation: %w", err)
 	}
 	httpClient := &http.Client{Transport: itr}
-	return &realClient{
+	cli := &realClient{
 		c:     gh.NewClient(httpClient),
 		owner: owner,
 		repo:  repo,
-	}, nil
+	}
+	return cli, itr, nil
 }

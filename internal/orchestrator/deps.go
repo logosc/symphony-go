@@ -46,15 +46,28 @@ type Deps struct {
 	// when approval.mode == "auto" and at least one rule sets
 	// reviewer_required: true.
 	Reviewer *approval.Reviewer
-	// PromptTemplate is the pre-loaded body of WORKFLOW.md.
+	// PromptTemplate is the pre-loaded body of the scalar workflow file
+	// (cfg.Repo.WorkflowFile). Required unless PromptTemplates is set.
 	PromptTemplate string
+	// PromptTemplates maps each per-axis label (the keys of
+	// cfg.Repo.WorkflowFiles, including "default") to the loaded body of
+	// the file at that key. Empty when only the scalar workflow file is
+	// configured. See Proposal 0001 §5.2.
+	PromptTemplates map[string]string
 	// NowFunc returns the current time. Defaults to time.Now.
 	NowFunc func() time.Time
 	// PushFunc pushes a branch to origin. Defaults to DefaultPushFunc.
 	PushFunc PushFunc
-	// GitHubToken is the resolved token value (looked up from
-	// cfg.GitHub.TokenEnv at startup).
+	// GitHubToken is the resolved PAT value (looked up from
+	// cfg.GitHub.TokenEnv at startup). Used in PAT auth mode. When
+	// GitHubTokenFn is non-nil, it takes precedence — see resolveGitHubToken.
 	GitHubToken string
+	// GitHubTokenFn returns a fresh GitHub access token on demand. Used
+	// in App auth mode where the installation access token rotates
+	// hourly; main.go binds this to the *ghinstallation.Transport's
+	// Token method. When non-nil, the orchestrator prefers this over
+	// GitHubToken at every push site so a stale token is never sent.
+	GitHubTokenFn func(ctx context.Context) (string, error)
 	// Logger is used for all audit/structured logs. Defaults to slog.Default().
 	Logger *slog.Logger
 	// WorkspaceRoot overrides where per-issue worktrees live. Defaults to
@@ -94,8 +107,8 @@ func New(deps Deps) (*Orchestrator, error) {
 	if deps.AgentRunner == nil {
 		return nil, errors.New("orchestrator: Deps.AgentRunner is required")
 	}
-	if deps.PromptTemplate == "" {
-		return nil, errors.New("orchestrator: Deps.PromptTemplate is required")
+	if deps.PromptTemplate == "" && len(deps.PromptTemplates) == 0 {
+		return nil, errors.New("orchestrator: Deps.PromptTemplate or Deps.PromptTemplates is required")
 	}
 	if deps.NowFunc == nil {
 		deps.NowFunc = time.Now

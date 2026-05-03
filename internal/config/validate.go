@@ -26,13 +26,36 @@ func Validate(cfg *Config) error {
 	if cfg.Repo.BaseBranch == "" {
 		return fmt.Errorf("config: repo.base_branch is required")
 	}
-	if cfg.Repo.WorkflowFile == "" {
+	if cfg.Repo.WorkflowFile == "" && cfg.Repo.WorkflowFiles.IsEmpty() {
 		return fmt.Errorf("config: repo.workflow_file is required")
+	}
+	// Per-axis collision: scalar and map for the same knob must not both
+	// be set. See Proposal 0001 §5.3.
+	if cfg.Repo.WorkflowFile != "" && !cfg.Repo.WorkflowFiles.IsEmpty() {
+		return fmt.Errorf("config: repo.workflow_file and repo.workflow_files are mutually exclusive")
+	}
+	if !cfg.Repo.WorkflowFiles.IsEmpty() && !cfg.Repo.WorkflowFiles.HasDefault() {
+		return fmt.Errorf("config: repo.workflow_files must contain a \"default\" key")
 	}
 
 	// github
-	if cfg.GitHub.TokenEnv == "" {
-		return fmt.Errorf("config: github.token_env is required")
+	switch cfg.GitHub.Auth {
+	case "", "pat":
+		if cfg.GitHub.TokenEnv == "" {
+			return fmt.Errorf("config: github.token_env is required when github.auth is %q", cfg.GitHub.Auth)
+		}
+	case "app":
+		if cfg.GitHub.AppIDEnv == "" {
+			return fmt.Errorf("config: github.app_id_env is required when github.auth = \"app\"")
+		}
+		if cfg.GitHub.InstallationIDEnv == "" {
+			return fmt.Errorf("config: github.installation_id_env is required when github.auth = \"app\"")
+		}
+		if cfg.GitHub.PrivateKeyPathEnv == "" {
+			return fmt.Errorf("config: github.private_key_path_env is required when github.auth = \"app\"")
+		}
+	default:
+		return fmt.Errorf("config: github.auth %q must be one of \"\" (= pat), \"pat\", or \"app\"", cfg.GitHub.Auth)
 	}
 	if cfg.GitHub.PollIntervalSeconds <= 0 {
 		return fmt.Errorf("config: github.poll_interval_seconds must be > 0")
@@ -65,10 +88,37 @@ func Validate(cfg *Config) error {
 	}
 
 	// approval
-	switch cfg.Approval.Mode {
-	case "gated", "auto", "handoff":
-	default:
-		return fmt.Errorf("config: approval.mode %q must be gated|auto|handoff", cfg.Approval.Mode)
+	// Per-axis collision: scalar Mode and ModeByLabel must not both be set.
+	// applyDefaults populates Mode="gated" when neither is set. To keep the
+	// per-axis path usable, we treat an explicitly-empty Mode as the
+	// "scalar not set" sentinel by deferring this check until after seeing
+	// whether ModeByLabel is non-empty.
+	if !cfg.Approval.ModeByLabel.IsEmpty() {
+		// When the map is set, the scalar must be empty. Because
+		// applyDefaults filled "gated" already, callers that want the map
+		// path must leave Mode unset; we detect ambiguity by checking
+		// whether Mode disagrees with the resolved default map value.
+		// Pragmatic rule (matches workflow_files / commands_by_label
+		// pattern): if both are present at YAML level, reject.
+		if cfg.Approval.scalarModeExplicit {
+			return fmt.Errorf("config: approval.mode and approval.mode_by_label are mutually exclusive")
+		}
+		if !cfg.Approval.ModeByLabel.HasDefault() {
+			return fmt.Errorf("config: approval.mode_by_label must contain a \"default\" key")
+		}
+		for k, v := range cfg.Approval.ModeByLabel.Values {
+			switch v {
+			case "gated", "auto", "handoff":
+			default:
+				return fmt.Errorf("config: approval.mode_by_label[%q] %q must be gated|auto|handoff", k, v)
+			}
+		}
+	} else {
+		switch cfg.Approval.Mode {
+		case "gated", "auto", "handoff":
+		default:
+			return fmt.Errorf("config: approval.mode %q must be gated|auto|handoff", cfg.Approval.Mode)
+		}
 	}
 	if cfg.Approval.Command == "" {
 		return fmt.Errorf("config: approval.command is required")
@@ -121,6 +171,31 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("config: codex.mode %q must be exec|app-server", cfg.Codex.Mode)
 	}
 
+	// claude / codex per-axis collisions. Mirror the workflow_files /
+	// commands_by_label pattern: a non-empty map requires a "default" key
+	// AND its scalar twin must be empty. See Proposal 0001 §5.3.
+	if err := checkScalarMapCollision("claude.planning_tools", cfg.Claude.PlanningTools, cfg.Claude.PlanningToolsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("claude.implementation_tools", cfg.Claude.ImplementationTools, cfg.Claude.ImplementationToolsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("claude.review_tools", cfg.Claude.ReviewTools, cfg.Claude.ReviewToolsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("claude.disallowed_tools", cfg.Claude.DisallowedTools, cfg.Claude.DisallowedToolsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("codex.planning_args", cfg.Codex.PlanningArgs, cfg.Codex.PlanningArgsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("codex.implementation_args", cfg.Codex.ImplementationArgs, cfg.Codex.ImplementationArgsByLabel); err != nil {
+		return err
+	}
+	if err := checkScalarMapCollision("codex.review_args", cfg.Codex.ReviewArgs, cfg.Codex.ReviewArgsByLabel); err != nil {
+		return err
+	}
+
 	// hooks
 	if cfg.Hooks.TimeoutSeconds <= 0 {
 		return fmt.Errorf("config: hooks.timeout_seconds must be > 0")
@@ -129,6 +204,12 @@ func Validate(cfg *Config) error {
 	// validation
 	if cfg.Validation.CommandTimeoutSeconds <= 0 {
 		return fmt.Errorf("config: validation.command_timeout_seconds must be > 0")
+	}
+	if len(cfg.Validation.Commands) > 0 && !cfg.Validation.CommandsByLabel.IsEmpty() {
+		return fmt.Errorf("config: validation.commands and validation.commands_by_label are mutually exclusive")
+	}
+	if !cfg.Validation.CommandsByLabel.IsEmpty() && !cfg.Validation.CommandsByLabel.HasDefault() {
+		return fmt.Errorf("config: validation.commands_by_label must contain a \"default\" key")
 	}
 
 	// audit redact patterns must compile
@@ -144,6 +225,20 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	return nil
+}
+
+// checkScalarMapCollision rejects configs that set both the scalar slice
+// and the per-axis map for the same knob, and rejects per-axis maps
+// missing a "default" key. The knob argument names the scalar field for
+// the error message (e.g. "claude.planning_tools").
+func checkScalarMapCollision(knob string, scalar []string, m OrderedMap[[]string]) error {
+	if len(scalar) > 0 && !m.IsEmpty() {
+		return fmt.Errorf("config: %s and %s_by_label are mutually exclusive", knob, knob)
+	}
+	if !m.IsEmpty() && !m.HasDefault() {
+		return fmt.Errorf("config: %s_by_label must contain a \"default\" key", knob)
+	}
 	return nil
 }
 

@@ -44,7 +44,7 @@ func TestClaudeBuildArgsByPhase(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(string(tc.phase), func(t *testing.T) {
-			args := cr.buildArgs(tc.phase)
+			args := cr.buildArgs(tc.phase, "")
 
 			want := []string{
 				"-p",
@@ -71,10 +71,74 @@ func TestClaudeBuildArgsByPhase(t *testing.T) {
 	}
 }
 
+// TestClaudeBuildArgsPerAxis exercises the per-axis tool selection path.
+// When a `*_tools_by_label` map is set and the request carries an
+// AxisKey, the runner must use the per-axis slice; an empty AxisKey must
+// fall back to the map's "default" entry. When the map is empty, the
+// scalar slice is used (covered by TestClaudeBuildArgsByPhase).
+func TestClaudeBuildArgsPerAxis(t *testing.T) {
+	cfg := config.ClaudeConfig{
+		MaxTurns: 5,
+		// Scalar slices intentionally empty — the per-axis maps drive
+		// selection. (Validate would reject scalar+map for the same knob.)
+		PlanningToolsByLabel: config.OrderedMap[[]string]{
+			Keys: []string{"type:research", "default"},
+			Values: map[string][]string{
+				"type:research": {"Read", "WebFetch", "WebSearch"},
+				"default":       {"Read"},
+			},
+		},
+		ImplementationToolsByLabel: config.OrderedMap[[]string]{
+			Keys: []string{"type:research", "default"},
+			Values: map[string][]string{
+				"type:research": {"Read", "Write"},
+				"default":       {"Read", "Edit", "Write"},
+			},
+		},
+		DisallowedToolsByLabel: config.OrderedMap[[]string]{
+			Keys: []string{"type:research", "default"},
+			Values: map[string][]string{
+				"type:research": {"Bash(git:*)"},
+				"default":       {"Bash(sudo:*)"},
+			},
+		},
+	}
+	cr := NewClaudeRunner(newTestAgentCfg(), cfg, config.EnvConfig{}, config.AuditConfig{})
+
+	t.Run("axis selects per-axis slice", func(t *testing.T) {
+		args := cr.buildArgs(types.PhasePlanning, "type:research")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--allowedTools Read,WebFetch,WebSearch") {
+			t.Fatalf("expected research planning tools, got argv: %v", args)
+		}
+		if !strings.Contains(joined, "--disallowedTools Bash(git:*)") {
+			t.Fatalf("expected research disallowed tools, got argv: %v", args)
+		}
+	})
+	t.Run("empty axis falls back to default", func(t *testing.T) {
+		args := cr.buildArgs(types.PhaseImplementation, "")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--allowedTools Read,Edit,Write") {
+			t.Fatalf("expected default impl tools, got argv: %v", args)
+		}
+	})
+	t.Run("unknown axis falls back to default", func(t *testing.T) {
+		args := cr.buildArgs(types.PhasePlanning, "type:unknown")
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--allowedTools Read") {
+			t.Fatalf("expected default planning tools, got argv: %v", args)
+		}
+		// Make sure we don't accidentally emit the research list.
+		if strings.Contains(joined, "WebFetch") {
+			t.Fatalf("research tools leaked under unknown axis: %v", args)
+		}
+	})
+}
+
 func TestClaudeBuildArgsOmitsEmptyToolLists(t *testing.T) {
 	cfg := config.ClaudeConfig{MaxTurns: 3}
 	cr := NewClaudeRunner(newTestAgentCfg(), cfg, config.EnvConfig{}, config.AuditConfig{})
-	args := cr.buildArgs(types.PhasePlanning)
+	args := cr.buildArgs(types.PhasePlanning, "")
 	for _, a := range args {
 		if a == "--allowedTools" || a == "--disallowedTools" {
 			t.Fatalf("expected empty tool lists to be omitted, got argv: %v", args)

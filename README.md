@@ -47,7 +47,7 @@ trust posture, and approval model.
 | Symphony | symphony-go |
 |---|---|
 | Linear tracker | GitHub Issues |
-| Run ends at a configured handoff state | Three approval modes via `approval.mode`: `gated` (mandatory `/symphony approve` comment), `auto` (rules engine + reviewer agent + post-implementation diff verification), `handoff` (Symphony's no-gate behavior) |
+| Run ends at a configured handoff state | Three approval modes via `approval.mode` — also overridable per-issue-label via `approval.mode_by_label` (M7.5; see proposal 0001): `gated` (mandatory `/symphony approve` comment), `auto` (rules engine + reviewer agent + post-implementation diff verification), `handoff` (Symphony's no-gate behavior) |
 | `linear_graphql` client-side tool | None — a `github_graphql` analogue could be added |
 | PAT-only auth | PAT (`NewClient`) or GitHub App installation (`NewAppClient`) |
 

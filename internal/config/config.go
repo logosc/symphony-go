@@ -37,12 +37,47 @@ type RepoConfig struct {
 	BaseBranch   string `yaml:"base_branch"`
 	LocalPath    string `yaml:"local_path"`
 	WorkflowFile string `yaml:"workflow_file"`
+	// WorkflowFiles is the optional per-axis variant of WorkflowFile.
+	// When set, the orchestrator picks a body keyed by the issue's labels
+	// using ResolveAxis. Required to carry a "default" key. Mutually
+	// exclusive with WorkflowFile (rejected at parse). See Proposal 0001.
+	WorkflowFiles OrderedMap[string] `yaml:"workflow_files"`
 }
 
 // GitHubConfig configures GitHub API access and polling cadence.
+//
+// Two auth schemes are supported:
+//
+//   - `auth: pat` (default): use a personal access token from
+//     `os.Getenv(token_env)`. Backward-compatible with pre-App configs
+//     that set only `token_env`.
+//   - `auth: app`: authenticate as a GitHub App installation. The App ID
+//     and installation ID are read as integers from the environment via
+//     `app_id_env` and `installation_id_env`; the .pem private key is
+//     read from the path stored in `os.Getenv(private_key_path_env)`.
+//     The orchestrator never persists the short-lived installation
+//     access token.
 type GitHubConfig struct {
-	TokenEnv            string `yaml:"token_env"`
-	PollIntervalSeconds int    `yaml:"poll_interval_seconds"`
+	// Auth selects the credential scheme. Empty or "pat" → personal
+	// access token (back-compat default). "app" → GitHub App
+	// installation.
+	Auth string `yaml:"auth"`
+	// TokenEnv names the environment variable holding the PAT. Required
+	// in `pat` mode.
+	TokenEnv string `yaml:"token_env"`
+	// AppIDEnv names the environment variable holding the integer App ID.
+	// Required in `app` mode.
+	AppIDEnv string `yaml:"app_id_env"`
+	// InstallationIDEnv names the environment variable holding the
+	// integer installation ID. Required in `app` mode.
+	InstallationIDEnv string `yaml:"installation_id_env"`
+	// PrivateKeyPathEnv names the environment variable holding the
+	// absolute path to the App's .pem private key file. Required in
+	// `app` mode. The file is read at startup and not retained on disk
+	// after that.
+	PrivateKeyPathEnv string `yaml:"private_key_path_env"`
+	// PollIntervalSeconds is the cadence between dispatch ticks.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 }
 
 // LabelsConfig is the GitHub label vocabulary used as the visible state
@@ -69,6 +104,40 @@ type ApprovalConfig struct {
 	// `github-actions[bot]`) so a prompt-injected issue body cannot make
 	// the orchestrator's own bot self-approve when running as a GitHub App.
 	IgnoredUsers []string `yaml:"ignored_users"`
+	// ModeByLabel is the optional per-axis variant of Mode. When set, the
+	// orchestrator resolves an approval mode keyed by Job.AxisKey instead
+	// of Mode. Required to carry a "default" key. Mutually exclusive with
+	// Mode (rejected at parse). Each value must be one of `gated`, `auto`,
+	// or `handoff`. See Proposal 0001 §5.
+	ModeByLabel OrderedMap[string] `yaml:"mode_by_label"`
+
+	// scalarModeExplicit is true when the YAML document set
+	// approval.mode literally (vs the applyDefaults fallback). Used by
+	// Validate to detect scalar+map ambiguity for this knob without
+	// tripping on the legacy default. Populated by UnmarshalYAML.
+	scalarModeExplicit bool `yaml:"-"`
+}
+
+// UnmarshalYAML records whether `mode` was set literally so the per-axis
+// collision check can tell it apart from the applyDefaults fallback.
+func (a *ApprovalConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawApproval ApprovalConfig
+	var raw rawApproval
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*a = ApprovalConfig(raw)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i]
+		if k.Value == "mode" {
+			a.scalarModeExplicit = true
+			break
+		}
+	}
+	return nil
 }
 
 // AutoConfig configures auto-approval: rules engine, reviewer agent,
@@ -122,21 +191,43 @@ type AgentConfig struct {
 }
 
 // ClaudeConfig is the provider-specific configuration for the Claude
-// runner.
+// runner. The four `*_by_label` fields are the optional per-axis
+// variants of their scalar twins; when set, the runner picks a tool
+// list keyed by Job.AxisKey instead of the scalar slice. Each map must
+// carry a "default" key and is mutually exclusive with its scalar
+// counterpart (rejected at parse). See Proposal 0001.
 type ClaudeConfig struct {
 	MaxTurns            int      `yaml:"max_turns"`
 	PlanningTools       []string `yaml:"planning_tools"`
 	ImplementationTools []string `yaml:"implementation_tools"`
 	ReviewTools         []string `yaml:"review_tools"`
 	DisallowedTools     []string `yaml:"disallowed_tools"`
+	// PlanningToolsByLabel is the per-axis variant of PlanningTools.
+	PlanningToolsByLabel OrderedMap[[]string] `yaml:"planning_tools_by_label"`
+	// ImplementationToolsByLabel is the per-axis variant of
+	// ImplementationTools.
+	ImplementationToolsByLabel OrderedMap[[]string] `yaml:"implementation_tools_by_label"`
+	// ReviewToolsByLabel is the per-axis variant of ReviewTools.
+	ReviewToolsByLabel OrderedMap[[]string] `yaml:"review_tools_by_label"`
+	// DisallowedToolsByLabel is the per-axis variant of DisallowedTools.
+	DisallowedToolsByLabel OrderedMap[[]string] `yaml:"disallowed_tools_by_label"`
 }
 
 // CodexConfig is the provider-specific configuration for the Codex runner.
+// The three `*_by_label` fields are the optional per-axis variants of
+// their scalar twins; see ClaudeConfig for the contract.
 type CodexConfig struct {
 	Mode               string   `yaml:"mode"`
 	PlanningArgs       []string `yaml:"planning_args"`
 	ImplementationArgs []string `yaml:"implementation_args"`
 	ReviewArgs         []string `yaml:"review_args"`
+	// PlanningArgsByLabel is the per-axis variant of PlanningArgs.
+	PlanningArgsByLabel OrderedMap[[]string] `yaml:"planning_args_by_label"`
+	// ImplementationArgsByLabel is the per-axis variant of
+	// ImplementationArgs.
+	ImplementationArgsByLabel OrderedMap[[]string] `yaml:"implementation_args_by_label"`
+	// ReviewArgsByLabel is the per-axis variant of ReviewArgs.
+	ReviewArgsByLabel OrderedMap[[]string] `yaml:"review_args_by_label"`
 }
 
 // EnvConfig configures the agent subprocess environment: which env vars
@@ -159,6 +250,11 @@ type HooksConfig struct {
 type ValidationConfig struct {
 	Commands              []string `yaml:"commands"`
 	CommandTimeoutSeconds int      `yaml:"command_timeout_seconds"`
+	// CommandsByLabel is the optional per-axis variant of Commands. When
+	// set, the orchestrator runs the slice keyed by Job.AxisKey instead
+	// of Commands. Required to carry a "default" key. Mutually exclusive
+	// with Commands (rejected at parse). See Proposal 0001.
+	CommandsByLabel OrderedMap[[]string] `yaml:"commands_by_label"`
 }
 
 // AuditConfig configures audit-log redaction.
@@ -199,7 +295,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Repo.BaseBranch == "" {
 		cfg.Repo.BaseBranch = "main"
 	}
-	if cfg.Repo.WorkflowFile == "" {
+	if cfg.Repo.WorkflowFile == "" && cfg.Repo.WorkflowFiles.IsEmpty() {
 		cfg.Repo.WorkflowFile = "WORKFLOW.md"
 	}
 	if cfg.GitHub.TokenEnv == "" {

@@ -174,6 +174,52 @@ fields are ignored. Missing required fields → fallback to gated.
 The rendered planning prompt suffix tells the agent this contract is
 mandatory and that the orchestrator will reject the plan otherwise.
 
+### Per-axis configuration (M7.5+)
+
+Five config knobs accept an additive `*_by_label` map alongside their
+scalar form so one orchestrator can drive multiple work axes (code,
+research, marketing, catalog, …) on one repo. Resolution: at job claim
+time, the orchestrator walks the canonical map (`repo.workflow_files`)
+in declared YAML order and picks the first key that appears as a label
+on the issue (`default` excluded, used only as last fallback). The
+chosen key is frozen on the `Job` as `AxisKey` and read back by every
+per-axis lookup; mid-run label edits cannot divert behavior. See
+`docs/proposals/0001-per-axis-config.md` and `docs/per-axis-config.md`.
+
+The five affected knobs:
+
+- `repo.workflow_files`             — per-axis `WORKFLOW.<axis>.md`
+- `validation.commands_by_label`    — per-axis validation pipelines
+- `claude.{planning,implementation,review,disallowed}_tools_by_label`
+  and `codex.{planning,implementation,review}_args_by_label`
+  — per-axis tool/sandbox surface
+- `approval.mode_by_label`          — per-axis approval mode
+
+Example (excerpt):
+
+```yaml
+repo:
+  workflow_files:
+    "type:research": "operations/workflows/WORKFLOW.research.md"
+    default:         "operations/workflows/WORKFLOW.code.md"
+validation:
+  commands_by_label:
+    "type:research": ["test -f docs/research/*.md"]
+    default:         ["go test ./..."]
+claude:
+  implementation_tools_by_label:
+    "type:research": [Read, Write, WebFetch, WebSearch]
+    default:         [Read, Edit, Write, "Bash(git:*)"]
+approval:
+  mode_by_label:
+    "type:marketing-ads": "gated"
+    default:               "auto"
+```
+
+Both scalar and `*_by_label` for the same knob is an error: config
+parsing rejects this at startup, and `doctor` reports it. Each
+`*_by_label` map MUST contain a `default` key.
+
 ### Config integrity guard
 
 The orchestrator MUST:
@@ -502,6 +548,11 @@ Three modes via `approval.mode`. `gated` is the conservative default. `auto`
 is rules + reviewer for less human friction with a prompt-injection-immune
 post-impl check. `handoff` is Symphony's no-gate behavior.
 
+The mode is also overridable per issue label via `approval.mode_by_label`
+(M7.5+, see proposal 0001). Example: `mode_by_label: { "type:marketing-ads":
+"gated", default: "auto" }`. The job's frozen `AxisKey` / `AxisSource`
+appears in `symphony-go status` and the PR body's `## Provenance` line.
+
 ### Mode: `gated`
 
 After plan posted:
@@ -751,6 +802,13 @@ independently once shared types are defined.
 - `symphony-go status` command.
 - Multi-turn continuation.
 - Workspace cleanup command.
+
+**M7.5. Per-axis configuration (proposal 0001).**
+- `repo.workflow_files`, `validation.commands_by_label`,
+  `claude.*_by_label`, `codex.*_by_label`, `approval.mode_by_label`.
+- `Job.AxisKey` / `AxisSource` frozen at claim time and surfaced in
+  status + PR body provenance.
+- Doctor: per-axis collision/default checks, workflow-file existence.
 
 ---
 

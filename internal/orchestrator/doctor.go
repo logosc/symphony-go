@@ -38,12 +38,16 @@ func Doctor(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
-	// 3: workflow file exists & renders.
-	wfPath := filepath.Join(cfg.Repo.LocalPath, cfg.Repo.WorkflowFile)
-	if body, err := config.LoadWorkflow(wfPath); err != nil {
-		errs = append(errs, fmt.Errorf("doctor: load workflow: %w", err))
-	} else if _, err := config.RenderPrompt(body, types.Issue{Number: 0}, 0); err != nil {
-		errs = append(errs, fmt.Errorf("doctor: render workflow: %w", err))
+	// 3: workflow file exists & renders. Skipped when only the per-axis
+	// workflow_files map is set (the per-axis check below handles each
+	// referenced file individually).
+	if cfg.Repo.WorkflowFile != "" {
+		wfPath := filepath.Join(cfg.Repo.LocalPath, cfg.Repo.WorkflowFile)
+		if body, err := config.LoadWorkflow(wfPath); err != nil {
+			errs = append(errs, fmt.Errorf("doctor: load workflow: %w", err))
+		} else if _, err := config.RenderPrompt(body, types.Issue{Number: 0}, 0); err != nil {
+			errs = append(errs, fmt.Errorf("doctor: render workflow: %w", err))
+		}
 	}
 
 	// 4: GITHUB_TOKEN env var set.
@@ -98,6 +102,12 @@ func Doctor(ctx context.Context, cfg *config.Config) error {
 		errs = append(errs, fmt.Errorf("doctor: workspace root not writable: %w", err))
 	}
 
+	// Per-axis configuration checks (Proposal 0001 §5.7). These mostly
+	// duplicate Validate's checks at config-load — the goal is to surface
+	// problems with clearer wording in `symphony-go doctor` output and to
+	// add file-existence checks Validate can't perform.
+	errs = append(errs, doctorPerAxisChecks(cfg, absCfg)...)
+
 	// 12: auto-mode preconditions.
 	if cfg.Approval.Mode == "auto" {
 		hasCatchAll := false
@@ -124,6 +134,110 @@ func Doctor(ctx context.Context, cfg *config.Config) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// doctorPerAxisChecks runs Proposal 0001 §5.7 checks against cfg. These
+// are restated here (vs only at parse time) so `symphony-go doctor`
+// surfaces them with clear, knob-named messages. absConfigPath is the
+// absolute path of the config file (or "") used to derive the "config
+// dir" — workflow files must not live under it.
+func doctorPerAxisChecks(cfg *config.Config, absConfigPath string) []error {
+	var errs []error
+
+	// Each `_by_label` map: default key required when non-empty. Already
+	// enforced by Validate, but reasserted here with a doctor prefix for
+	// clarity.
+	if !cfg.Repo.WorkflowFiles.IsEmpty() && !cfg.Repo.WorkflowFiles.HasDefault() {
+		errs = append(errs, fmt.Errorf("doctor: repo.workflow_files missing \"default\" key"))
+	}
+	if !cfg.Validation.CommandsByLabel.IsEmpty() && !cfg.Validation.CommandsByLabel.HasDefault() {
+		errs = append(errs, fmt.Errorf("doctor: validation.commands_by_label missing \"default\" key"))
+	}
+	if !cfg.Approval.ModeByLabel.IsEmpty() && !cfg.Approval.ModeByLabel.HasDefault() {
+		errs = append(errs, fmt.Errorf("doctor: approval.mode_by_label missing \"default\" key"))
+	}
+	for name, m := range claudeByLabelMaps(cfg) {
+		if !m.IsEmpty() && !m.HasDefault() {
+			errs = append(errs, fmt.Errorf("doctor: claude.%s missing \"default\" key", name))
+		}
+	}
+	for name, m := range codexByLabelMaps(cfg) {
+		if !m.IsEmpty() && !m.HasDefault() {
+			errs = append(errs, fmt.Errorf("doctor: codex.%s missing \"default\" key", name))
+		}
+	}
+
+	// approval.mode_by_label values must be valid modes.
+	if !cfg.Approval.ModeByLabel.IsEmpty() {
+		for k, v := range cfg.Approval.ModeByLabel.Values {
+			switch v {
+			case "gated", "auto", "handoff":
+			default:
+				errs = append(errs, fmt.Errorf(
+					"doctor: approval.mode_by_label[%q] = %q must be gated|auto|handoff", k, v))
+			}
+		}
+	}
+
+	// repo.workflow_files: every referenced file exists, lives under
+	// repo.local_path, and is NOT under the config dir.
+	if !cfg.Repo.WorkflowFiles.IsEmpty() {
+		absRepo, _ := filepath.Abs(cfg.Repo.LocalPath)
+		var configDir string
+		if absConfigPath != "" {
+			configDir = filepath.Dir(absConfigPath)
+		}
+		for _, k := range cfg.Repo.WorkflowFiles.Keys {
+			rel := cfg.Repo.WorkflowFiles.Values[k]
+			if rel == "" {
+				errs = append(errs, fmt.Errorf("doctor: repo.workflow_files[%q] is empty", k))
+				continue
+			}
+			full := rel
+			if !filepath.IsAbs(full) {
+				full = filepath.Join(cfg.Repo.LocalPath, rel)
+			}
+			absFull, _ := filepath.Abs(full)
+			if _, err := os.Stat(absFull); err != nil {
+				errs = append(errs, fmt.Errorf(
+					"doctor: repo.workflow_files[%q] %q: %w", k, rel, err))
+				continue
+			}
+			if absRepo != "" && !pathInside(absFull, absRepo) {
+				errs = append(errs, fmt.Errorf(
+					"doctor: repo.workflow_files[%q] %q is outside repo.local_path %q",
+					k, rel, cfg.Repo.LocalPath))
+			}
+			if configDir != "" && pathInside(absFull, configDir) {
+				errs = append(errs, fmt.Errorf(
+					"doctor: repo.workflow_files[%q] %q is under config dir %q (forbidden)",
+					k, rel, configDir))
+			}
+		}
+	}
+
+	return errs
+}
+
+// claudeByLabelMaps returns the claude per-axis maps keyed by their YAML
+// suffix name for use in doctor diagnostics.
+func claudeByLabelMaps(cfg *config.Config) map[string]config.OrderedMap[[]string] {
+	return map[string]config.OrderedMap[[]string]{
+		"planning_tools_by_label":       cfg.Claude.PlanningToolsByLabel,
+		"implementation_tools_by_label": cfg.Claude.ImplementationToolsByLabel,
+		"review_tools_by_label":         cfg.Claude.ReviewToolsByLabel,
+		"disallowed_tools_by_label":     cfg.Claude.DisallowedToolsByLabel,
+	}
+}
+
+// codexByLabelMaps returns the codex per-axis maps keyed by their YAML
+// suffix name for use in doctor diagnostics.
+func codexByLabelMaps(cfg *config.Config) map[string]config.OrderedMap[[]string] {
+	return map[string]config.OrderedMap[[]string]{
+		"planning_args_by_label":       cfg.Codex.PlanningArgsByLabel,
+		"implementation_args_by_label": cfg.Codex.ImplementationArgsByLabel,
+		"review_args_by_label":         cfg.Codex.ReviewArgsByLabel,
+	}
 }
 
 // pathInside is local to avoid an import cycle with config; it mirrors

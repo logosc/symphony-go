@@ -103,6 +103,15 @@ type Job struct {
 	PRNumber          int               `json:"pr_number,omitempty"`
 	Attempt           int               `json:"attempt"`
 	UpdatedAt         time.Time         `json:"updated_at"`
+	// AxisKey is the per-axis label this job was frozen against at claim
+	// time. "default" when no per-axis map is configured or no concrete
+	// label matched. Empty on jobs persisted before the per-axis feature
+	// shipped (treat empty as "default", "scalar"). See Proposal 0001.
+	AxisKey string `json:"axis_key,omitempty"`
+	// AxisSource records how AxisKey was selected. One of "by_label" (a
+	// `*_by_label` map drove resolution) or "scalar" (no per-axis map was
+	// configured for the canonical knob).
+	AxisSource string `json:"axis_source,omitempty"`
 }
 
 // RunRequest is what the orchestrator hands to an AgentRunner.
@@ -113,6 +122,11 @@ type RunRequest struct {
 	Prompt   string
 	Phase    Phase
 	Timeout  time.Duration
+	// AxisKey is the per-axis label frozen on the Job at claim time. May
+	// be empty for legacy callers that haven't been updated. Runners that
+	// honor per-axis tool/sandbox maps key into them with this value
+	// rather than re-resolving from current issue labels (reconcile-safe).
+	AxisKey string
 }
 
 // RunResult is what an AgentRunner returns. Stderr and Events are already

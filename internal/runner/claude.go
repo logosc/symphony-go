@@ -173,25 +173,39 @@ func NewClaudeRunner(agentCfg config.AgentConfig, claudeCfg config.ClaudeConfig,
 }
 
 // buildArgs constructs the argv (after the command itself) for one phase.
-// Exposed package-private so tests can snapshot it directly without
-// spawning a process.
-func (cr *ClaudeRunner) buildArgs(phase types.Phase) []string {
+// axisKey is the per-axis label frozen on the Job at claim time; when
+// non-empty, any configured `*_by_label` tool/disallowed map is consulted
+// before falling back to the scalar slice. Exposed package-private so
+// tests can snapshot it directly without spawning a process.
+func (cr *ClaudeRunner) buildArgs(phase types.Phase, axisKey string) []string {
 	var permissionMode string
 	var allowedTools []string
+	var byLabel config.OrderedMap[[]string]
 	switch phase {
 	case types.PhasePlanning:
 		permissionMode = "plan"
 		allowedTools = cr.claudeCfg.PlanningTools
+		byLabel = cr.claudeCfg.PlanningToolsByLabel
 	case types.PhaseReview:
 		permissionMode = "plan"
 		allowedTools = cr.claudeCfg.ReviewTools
+		byLabel = cr.claudeCfg.ReviewToolsByLabel
 	case types.PhaseImplementation:
 		permissionMode = "acceptEdits"
 		allowedTools = cr.claudeCfg.ImplementationTools
+		byLabel = cr.claudeCfg.ImplementationToolsByLabel
 	default:
 		// Fall back to the most-restrictive mode.
 		permissionMode = "plan"
 		allowedTools = cr.claudeCfg.PlanningTools
+		byLabel = cr.claudeCfg.PlanningToolsByLabel
+	}
+	if v, ok := resolveByAxisStrings(byLabel, axisKey); ok {
+		allowedTools = v
+	}
+	disallowed := cr.claudeCfg.DisallowedTools
+	if v, ok := resolveByAxisStrings(cr.claudeCfg.DisallowedToolsByLabel, axisKey); ok {
+		disallowed = v
 	}
 
 	args := []string{
@@ -205,10 +219,30 @@ func (cr *ClaudeRunner) buildArgs(phase types.Phase) []string {
 	if len(allowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))
 	}
-	if len(cr.claudeCfg.DisallowedTools) > 0 {
-		args = append(args, "--disallowedTools", strings.Join(cr.claudeCfg.DisallowedTools, ","))
+	if len(disallowed) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(disallowed, ","))
 	}
 	return args
+}
+
+// resolveByAxisStrings looks up an axis key in a per-axis OrderedMap of
+// string slices and returns the slice plus ok=true. When the map is empty
+// or axisKey is empty, returns ok=false so the caller falls back to the
+// scalar slice. Falls back to the "default" entry when axisKey doesn't
+// match a concrete key but a default is present.
+func resolveByAxisStrings(m config.OrderedMap[[]string], axisKey string) ([]string, bool) {
+	if m.IsEmpty() {
+		return nil, false
+	}
+	if axisKey != "" {
+		if v, ok := m.Values[axisKey]; ok {
+			return v, true
+		}
+	}
+	if v, ok := m.Values["default"]; ok {
+		return v, true
+	}
+	return nil, false
 }
 
 // Run executes one phase of work via the Claude Code CLI. It implements
@@ -229,7 +263,7 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 	runCtx, watchdog := newStallWatchdog(runCtx, stallTimeout)
 	defer watchdog.Stop()
 
-	args := cr.buildArgs(req.Phase)
+	args := cr.buildArgs(req.Phase, req.AxisKey)
 
 	startedAt := time.Now()
 	result := types.RunResult{StartedAt: startedAt}

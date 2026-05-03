@@ -79,24 +79,37 @@ func (cr *CodexRunner) WithCommand(cmd string) *CodexRunner {
 	return cr
 }
 
-// phaseArgs returns the configured per-phase argv tail.
-func (cr *CodexRunner) phaseArgs(phase types.Phase) ([]string, error) {
+// phaseArgs returns the configured per-phase argv tail. axisKey is the
+// per-axis label frozen on the Job at claim time; when non-empty, any
+// configured `*_args_by_label` map is consulted first and falls back to
+// the scalar slice when the map is empty or carries no matching entry.
+func (cr *CodexRunner) phaseArgs(phase types.Phase, axisKey string) ([]string, error) {
+	var scalar []string
+	var byLabel config.OrderedMap[[]string]
 	switch phase {
 	case types.PhasePlanning:
-		return append([]string{}, cr.codexCfg.PlanningArgs...), nil
+		scalar = cr.codexCfg.PlanningArgs
+		byLabel = cr.codexCfg.PlanningArgsByLabel
 	case types.PhaseReview:
-		return append([]string{}, cr.codexCfg.ReviewArgs...), nil
+		scalar = cr.codexCfg.ReviewArgs
+		byLabel = cr.codexCfg.ReviewArgsByLabel
 	case types.PhaseImplementation:
-		return append([]string{}, cr.codexCfg.ImplementationArgs...), nil
+		scalar = cr.codexCfg.ImplementationArgs
+		byLabel = cr.codexCfg.ImplementationArgsByLabel
 	default:
 		return nil, fmt.Errorf("codex runner: unknown phase %q", phase)
 	}
+	if v, ok := resolveByAxisStrings(byLabel, axisKey); ok {
+		return append([]string{}, v...), nil
+	}
+	return append([]string{}, scalar...), nil
 }
 
 // buildArgv constructs the full argv (excluding the executable itself)
-// for the given phase: ["exec", "--json", ...phase-args...].
-func (cr *CodexRunner) buildArgv(phase types.Phase) ([]string, error) {
-	pa, err := cr.phaseArgs(phase)
+// for the given phase: ["exec", "--json", ...phase-args...]. axisKey is
+// forwarded to phaseArgs for per-axis selection.
+func (cr *CodexRunner) buildArgv(phase types.Phase, axisKey string) ([]string, error) {
+	pa, err := cr.phaseArgs(phase, axisKey)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +139,7 @@ func (cr *CodexRunner) Run(ctx context.Context, req types.RunRequest) (types.Run
 			fmt.Errorf("codex runner: unsupported mode %q (want exec|app-server)", cr.codexCfg.Mode)
 	}
 
-	argv, err := cr.buildArgv(req.Phase)
+	argv, err := cr.buildArgv(req.Phase, req.AxisKey)
 	if err != nil {
 		return types.RunResult{StartedAt: started, CompletedAt: time.Now()}, err
 	}

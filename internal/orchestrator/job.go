@@ -91,6 +91,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 	log.Info("claim", "branch", branch)
 
+	axisKey, axisSrc := o.resolveAxis(issue)
 	job := &types.Job{
 		IssueNumber:   issue.Number,
 		Repo:          cfg.Repo.FullName,
@@ -100,6 +101,8 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		Branch:        branch,
 		Attempt:       1,
 		UpdatedAt:     o.deps.NowFunc(),
+		AxisKey:       axisKey,
+		AxisSource:    axisSrc,
 	}
 	if err := o.saveJob(job); err != nil {
 		return err
@@ -144,13 +147,13 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 
 	// 5. Render planning prompt + run agent.
-	rendered, err := config.RenderPrompt(o.deps.PromptTemplate, issue, job.Attempt)
+	rendered, err := config.RenderPrompt(o.promptBodyFor(job.AxisKey), issue, job.Attempt)
 	if err != nil {
 		return o.markBlocked(ctx, job, fmt.Sprintf("render prompt: %v", err))
 	}
 	planPrompt := rendered + planSuffix
 
-	log.Info("planning_started")
+	log.Info("planning_started", "axis_key", job.AxisKey, "axis_source", job.AxisSource)
 	planResult, err := o.deps.AgentRunner.Run(ctx, types.RunRequest{
 		Issue:    issue,
 		RepoPath: layout.RepoPath,
@@ -158,6 +161,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		Prompt:   planPrompt,
 		Phase:    types.PhasePlanning,
 		Timeout:  time.Duration(cfg.Agent.TimeoutSeconds) * time.Second,
+		AxisKey:  job.AxisKey,
 	})
 	log.Info("planning_completed", "success", planResult.Success, "err", err)
 	// 6. after_run (logged, status unchanged).
@@ -193,7 +197,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 
 	// 8. Approval routing.
-	mode := types.ApprovalMode(cfg.Approval.Mode)
+	mode := types.ApprovalMode(o.resolveApprovalMode(job))
 	switch mode {
 	case types.ApprovalHandoff:
 		job.ApprovalPath = types.ApprovalPathHandoff
@@ -325,13 +329,13 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		}
 	}
 
-	rendered, err := config.RenderPrompt(o.deps.PromptTemplate, issue, job.Attempt)
+	rendered, err := config.RenderPrompt(o.promptBodyFor(job.AxisKey), issue, job.Attempt)
 	if err != nil {
 		return o.markBlocked(ctx, job, fmt.Sprintf("render impl prompt: %v", err))
 	}
 	implPrompt := rendered + fmt.Sprintf(implSuffixTmpl, job.PlanText)
 
-	log.Info("implementation_started")
+	log.Info("implementation_started", "axis_key", job.AxisKey)
 	implReq := types.RunRequest{
 		Issue:    issue,
 		RepoPath: layout.RepoPath,
@@ -339,6 +343,7 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		Prompt:   implPrompt,
 		Phase:    types.PhaseImplementation,
 		Timeout:  time.Duration(cfg.Agent.TimeoutSeconds) * time.Second,
+		AxisKey:  job.AxisKey,
 	}
 	implResult, turnsUsed, ierr := o.runImplementationAgent(ctx, log, implReq)
 	log.Info("implementation_completed", "success", implResult.Success, "turns", turnsUsed, "err", ierr)
@@ -364,8 +369,9 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		return o.markBlocked(ctx, job, "no changes produced")
 	}
 
-	// 12. Diff verification (auto only).
-	if cfg.Approval.Mode == "auto" && cfg.Auto.VerifyDiffMatchesPlan && job.PlanScope != nil {
+	// 12. Diff verification (auto only). Use the resolved per-axis mode so
+	// per-axis overrides honor the same gate as planning-time routing.
+	if o.resolveApprovalMode(job) == "auto" && cfg.Auto.VerifyDiffMatchesPlan && job.PlanScope != nil {
 		drift := approval.VerifyDiff(statusOut, *job.PlanScope, cfg.Auto.MaxDiffDriftFiles)
 		if drift.Drifted {
 			body := fmt.Sprintf("[symphony-go] diff drift detected (%d extra files exceed max %d):\n- %s",
@@ -379,7 +385,11 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 
 	// 13. Validation.
 	var results []valResult
-	for _, cmdStr := range cfg.Validation.Commands {
+	validationCmds, vErr := o.resolveValidationCommands(job)
+	if vErr != nil {
+		return o.markFailed(ctx, job, fmt.Sprintf("validation resolve: %v", vErr))
+	}
+	for _, cmdStr := range validationCmds {
 		log.Info("validation_command", "cmd", cmdStr)
 		res, vErr := internalexec.Run(ctx, cmdStr, internalexec.RunOptions{
 			Cwd:     layout.RepoPath,
@@ -408,7 +418,11 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 	log.Info("committed")
 
 	// 15. Push.
-	if err := o.deps.PushFunc(ctx, layout.RepoPath, job.Branch, o.deps.GitHubToken); err != nil {
+	pushToken, tokErr := o.resolveGitHubToken(ctx)
+	if tokErr != nil {
+		return o.markFailed(ctx, job, fmt.Sprintf("resolve github token for push: %v", tokErr))
+	}
+	if err := o.deps.PushFunc(ctx, layout.RepoPath, job.Branch, pushToken); err != nil {
 		return o.markFailed(ctx, job, fmt.Sprintf("git push: %v", err))
 	}
 	log.Info("pushed")
@@ -613,6 +627,19 @@ func (o *Orchestrator) markFailed(ctx context.Context, job *types.Job, reason st
 	return o.saveJob(job)
 }
 
+// resolveGitHubToken returns a fresh GitHub access token suitable for
+// `git push` over HTTPS. Prefers Deps.GitHubTokenFn (App-installation
+// auth, rotates hourly via ghinstallation) when non-nil; falls back to
+// the static Deps.GitHubToken (PAT auth) otherwise. Returns an empty
+// string and nil error if neither is set — the push will fail at git
+// level with a clearer error than panicking here.
+func (o *Orchestrator) resolveGitHubToken(ctx context.Context) (string, error) {
+	if o.deps.GitHubTokenFn != nil {
+		return o.deps.GitHubTokenFn(ctx)
+	}
+	return o.deps.GitHubToken, nil
+}
+
 // saveJob updates Job.UpdatedAt and persists.
 func (o *Orchestrator) saveJob(j *types.Job) error {
 	j.UpdatedAt = o.deps.NowFunc()
@@ -788,6 +815,118 @@ func (o *Orchestrator) layoutForJob(job *types.Job) workspace.Layout {
 // envForJob builds the agent env using Layout.HomePath.
 func (o *Orchestrator) envForJob(layout workspace.Layout) []string {
 	return internalexec.BuildAgentEnv(o.deps.Config.Env.Allowlist, o.deps.Config.Env.BlockPatterns, os.Environ(), layout.HomePath)
+}
+
+// resolveAxis freezes the axis identity for a new Job. The canonical
+// mapping is cfg.Repo.WorkflowFiles (the workflow-file map): if any
+// per-axis map is configured anywhere, the orchestrator resolves
+// against this canonical map so every per-axis knob (validation, tools,
+// approval) keys off the same axis. When no per-axis map is configured,
+// the job carries ("default", "scalar"). On a no-match-no-default
+// situation, also fall back to ("default", "scalar") — Validate already
+// rejects maps without a "default" key, so this only happens for
+// non-canonical maps configured by Agent Y in later gaps.
+func (o *Orchestrator) resolveAxis(issue types.Issue) (string, string) {
+	cfg := o.deps.Config
+	if !o.anyPerAxisMapSet() {
+		return "default", "scalar"
+	}
+	if cfg.Repo.WorkflowFiles.IsEmpty() {
+		// A non-canonical per-axis map exists but the workflow map does
+		// not. Treat as scalar identity for now; future gaps may pick a
+		// different canonical anchor.
+		return "default", "scalar"
+	}
+	key, _, err := config.ResolveAxis(issue, cfg.Repo.WorkflowFiles)
+	if err != nil {
+		return "default", "by_label"
+	}
+	return key, "by_label"
+}
+
+// anyPerAxisMapSet reports whether any `*_by_label` configuration map is
+// non-empty. Used to decide whether the orchestrator is operating in
+// per-axis mode at all.
+func (o *Orchestrator) anyPerAxisMapSet() bool {
+	cfg := o.deps.Config
+	if !cfg.Repo.WorkflowFiles.IsEmpty() {
+		return true
+	}
+	if !cfg.Validation.CommandsByLabel.IsEmpty() {
+		return true
+	}
+	if !cfg.Approval.ModeByLabel.IsEmpty() {
+		return true
+	}
+	if !cfg.Claude.PlanningToolsByLabel.IsEmpty() ||
+		!cfg.Claude.ImplementationToolsByLabel.IsEmpty() ||
+		!cfg.Claude.ReviewToolsByLabel.IsEmpty() ||
+		!cfg.Claude.DisallowedToolsByLabel.IsEmpty() {
+		return true
+	}
+	if !cfg.Codex.PlanningArgsByLabel.IsEmpty() ||
+		!cfg.Codex.ImplementationArgsByLabel.IsEmpty() ||
+		!cfg.Codex.ReviewArgsByLabel.IsEmpty() {
+		return true
+	}
+	return false
+}
+
+// resolveApprovalMode returns the effective approval mode for a job,
+// honoring cfg.Approval.ModeByLabel (per-axis) when set and falling back
+// to the scalar cfg.Approval.Mode otherwise. The job's frozen AxisKey
+// drives the lookup; an empty AxisKey or no matching key falls through
+// to the map's "default" entry (Validate ensures one exists when the map
+// is non-empty). See Proposal 0001 §5.
+func (o *Orchestrator) resolveApprovalMode(job *types.Job) string {
+	cfg := o.deps.Config
+	if cfg.Approval.ModeByLabel.IsEmpty() {
+		return cfg.Approval.Mode
+	}
+	axis := job.AxisKey
+	if axis != "" {
+		if v, ok := cfg.Approval.ModeByLabel.Values[axis]; ok {
+			return v
+		}
+	}
+	if v, ok := cfg.Approval.ModeByLabel.Values["default"]; ok {
+		return v
+	}
+	return cfg.Approval.Mode
+}
+
+// promptBodyFor returns the WORKFLOW.md prompt body to render for a job
+// with the given frozen axis key. Falls back to the scalar template when
+// no per-axis body exists for the key. AxisKey == "" (legacy job) also
+// falls back to scalar.
+func (o *Orchestrator) promptBodyFor(axisKey string) string {
+	if axisKey != "" && o.deps.PromptTemplates != nil {
+		if body, ok := o.deps.PromptTemplates[axisKey]; ok && body != "" {
+			return body
+		}
+	}
+	return o.deps.PromptTemplate
+}
+
+// resolveValidationCommands returns the validation command list for a
+// job, honoring the frozen Job.AxisKey. When CommandsByLabel is empty,
+// returns cfg.Validation.Commands (legacy behavior).
+func (o *Orchestrator) resolveValidationCommands(job *types.Job) ([]string, error) {
+	cfg := o.deps.Config
+	if cfg.Validation.CommandsByLabel.IsEmpty() {
+		return cfg.Validation.Commands, nil
+	}
+	axis := job.AxisKey
+	if axis == "" {
+		axis = "default"
+	}
+	if v, ok := cfg.Validation.CommandsByLabel.Values[axis]; ok {
+		return v, nil
+	}
+	if v, ok := cfg.Validation.CommandsByLabel.Values["default"]; ok {
+		return v, nil
+	}
+	return nil, fmt.Errorf("validation.commands_by_label has no entry for %q and no default", axis)
 }
 
 var _ = errors.New // silence unused import if ever

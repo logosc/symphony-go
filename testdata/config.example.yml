@@ -8,7 +8,15 @@ repo:
   workflow_file: "WORKFLOW.md"
 
 github:
+  # auth: "pat" (default) — personal access token from token_env.
+  # Set to "app" to authenticate as a GitHub App installation; see the
+  # commented block below.
+  auth: "pat"
   token_env: "GITHUB_TOKEN"
+  # GitHub App installation auth (uncomment after setting auth: "app"):
+  # app_id_env: "SYMPHONY_GO_APP_ID"
+  # installation_id_env: "SYMPHONY_GO_APP_INSTALLATION_ID"
+  # private_key_path_env: "SYMPHONY_GO_APP_PRIVATE_KEY_PATH"
   poll_interval_seconds: 30
 
 labels:
@@ -68,13 +76,19 @@ claude:
     - "Bash(wget:*)"
 
 codex:
-  mode: "exec"                        # exec | app-server (post-MVP)
+  mode: "exec"                        # exec | app-server (M7)
   planning_args:       ["--sandbox", "read-only"]
   implementation_args: ["--sandbox", "workspace-write"]
   review_args:         ["--sandbox", "read-only"]
 
 env:
-  allowlist: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+  # Subscription mode (default): the agent inherits no API keys; the
+  # orchestrator symlinks ~/.claude/ and ~/.codex/ into the agent's
+  # isolated $HOME so the local CLIs see their own auth state.
+  allowlist: []
+  # API-key mode (uncomment if you don't want subscription auth — e.g.
+  # headless server with no logged-in CLI):
+  # allowlist: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
   block_patterns:
     - ".*TOKEN.*"
     - ".*SECRET.*"

@@ -279,6 +279,104 @@ func TestEnvIndirectionUndefinedExpandsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadWorkflowFilesScalarCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`workflow_file: "WORKFLOW.md"`,
+		`workflow_file: "WORKFLOW.md"
+  workflow_files:
+    "type:code": "WORKFLOW.code.md"
+    default:     "WORKFLOW.code.md"`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want collision", err)
+	}
+}
+
+func TestLoadWorkflowFilesMissingDefault(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`workflow_file: "WORKFLOW.md"`,
+		`workflow_files:
+    "type:code": "WORKFLOW.code.md"`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want missing-default error", err)
+	}
+}
+
+func TestLoadWorkflowFilesOnlyMap(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`workflow_file: "WORKFLOW.md"`,
+		`workflow_files:
+    "type:code":     "WORKFLOW.code.md"
+    "type:research": "WORKFLOW.research.md"
+    default:         "WORKFLOW.code.md"`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Repo.WorkflowFile != "" {
+		t.Errorf("WorkflowFile should be empty, got %q", cfg.Repo.WorkflowFile)
+	}
+	if cfg.Repo.WorkflowFiles.IsEmpty() {
+		t.Fatal("WorkflowFiles should be populated")
+	}
+	want := []string{"type:code", "type:research", "default"}
+	for i, k := range want {
+		if cfg.Repo.WorkflowFiles.Keys[i] != k {
+			t.Errorf("Keys[%d] = %q; want %q", i, cfg.Repo.WorkflowFiles.Keys[i], k)
+		}
+	}
+}
+
+func TestLoadValidationCommandsByLabelCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`commands: ["go test ./..."]`,
+		`commands: ["go test ./..."]
+  commands_by_label:
+    "type:code": ["go test ./..."]
+    default:     []`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want collision", err)
+	}
+}
+
+func TestLoadValidationCommandsByLabelMissingDefault(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`commands: ["go test ./..."]`,
+		`commands_by_label:
+    "type:code": ["go test ./..."]`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want missing-default error", err)
+	}
+}
+
+func TestLoadValidationCommandsByLabelOnlyMap(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`commands: ["go test ./..."]`,
+		`commands_by_label:
+    "type:code":     ["go test ./..."]
+    "type:research": ["test -f docs/research/x.md"]
+    default:         []`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Validation.Commands) != 0 {
+		t.Errorf("Commands should be empty, got %v", cfg.Validation.Commands)
+	}
+	if cfg.Validation.CommandsByLabel.IsEmpty() {
+		t.Fatal("CommandsByLabel should be populated")
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "nope.yml"))
 	if err == nil {
@@ -291,5 +389,303 @@ func TestLoadInvalidYAML(t *testing.T) {
 	_, err := Load(p)
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+// --- Per-axis configuration: G13 + G16 (Proposal 0001) ---
+
+// TestLoadClaudePlanningToolsByLabelCollision rejects the case where both
+// scalar and per-axis maps are set for the same knob.
+func TestLoadClaudePlanningToolsByLabelCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`planning_tools: ["Read", "Grep"]`,
+		`planning_tools: ["Read", "Grep"]
+  planning_tools_by_label:
+    "type:research": ["Read", "WebFetch"]
+    default:         ["Read"]`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want collision", err)
+	}
+}
+
+// TestLoadClaudeImplementationToolsByLabelMissingDefault rejects per-axis
+// maps that don't include a `default` entry.
+func TestLoadClaudeImplementationToolsByLabelMissingDefault(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`implementation_tools: ["Read", "Edit"]`,
+		`implementation_tools_by_label:
+    "type:code": ["Read", "Edit"]`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want missing-default", err)
+	}
+}
+
+// TestLoadClaudeAllByLabelMaps populates every claude per-axis map and
+// checks they parse and survive validation.
+func TestLoadClaudeAllByLabelMaps(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`claude:
+  max_turns: 20
+  planning_tools: ["Read", "Grep"]
+  implementation_tools: ["Read", "Edit"]
+  review_tools: ["Read"]
+  disallowed_tools: ["Bash(sudo:*)"]`,
+		`claude:
+  max_turns: 20
+  planning_tools_by_label:
+    "type:research": ["Read", "WebFetch"]
+    default:         ["Read"]
+  implementation_tools_by_label:
+    "type:research": ["Read", "Write"]
+    default:         ["Read", "Edit"]
+  review_tools_by_label:
+    default: ["Read"]
+  disallowed_tools_by_label:
+    default: ["Bash(sudo:*)"]`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Claude.PlanningToolsByLabel.IsEmpty() {
+		t.Fatalf("planning_tools_by_label not parsed")
+	}
+	if got := cfg.Claude.PlanningToolsByLabel.Values["type:research"]; len(got) != 2 || got[0] != "Read" {
+		t.Fatalf("unexpected planning research tools: %v", got)
+	}
+}
+
+// TestLoadCodexImplementationArgsByLabelCollision rejects scalar+map.
+func TestLoadCodexImplementationArgsByLabelCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`codex:
+  mode: "exec"`,
+		`codex:
+  mode: "exec"
+  implementation_args: ["--sandbox", "workspace-write"]
+  implementation_args_by_label:
+    "type:research": ["--sandbox", "read-only"]
+    default:         ["--sandbox", "workspace-write"]`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want collision", err)
+	}
+}
+
+// TestLoadCodexArgsByLabelOnlyMap parses a fully per-axis codex section.
+func TestLoadCodexArgsByLabelOnlyMap(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`codex:
+  mode: "exec"`,
+		`codex:
+  mode: "exec"
+  planning_args_by_label:
+    default: ["--sandbox", "read-only"]
+  implementation_args_by_label:
+    "type:research": ["--sandbox", "read-only"]
+    default:         ["--sandbox", "workspace-write"]
+  review_args_by_label:
+    default: ["--sandbox", "read-only"]`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Codex.ImplementationArgsByLabel.IsEmpty() {
+		t.Fatalf("implementation_args_by_label empty")
+	}
+	v := cfg.Codex.ImplementationArgsByLabel.Values["type:research"]
+	if len(v) != 2 || v[1] != "read-only" {
+		t.Fatalf("unexpected research impl args: %v", v)
+	}
+}
+
+// TestLoadApprovalModeByLabelCollision rejects scalar+map.
+func TestLoadApprovalModeByLabelCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`approval:
+  mode: "auto"
+  command: "/symphony approve"
+  require_write_permission: true`,
+		`approval:
+  mode: "auto"
+  mode_by_label:
+    "type:marketing-ads": "gated"
+    default:               "auto"
+  command: "/symphony approve"
+  require_write_permission: true`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want collision", err)
+	}
+}
+
+// TestLoadApprovalModeByLabelMissingDefault rejects map without default.
+func TestLoadApprovalModeByLabelMissingDefault(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`approval:
+  mode: "auto"
+  command: "/symphony approve"
+  require_write_permission: true`,
+		`approval:
+  mode_by_label:
+    "type:marketing-ads": "gated"
+  command: "/symphony approve"
+  require_write_permission: true`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want missing-default", err)
+	}
+}
+
+// TestLoadApprovalModeByLabelInvalidValue catches typos like "gateed".
+func TestLoadApprovalModeByLabelInvalidValue(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`approval:
+  mode: "auto"
+  command: "/symphony approve"
+  require_write_permission: true`,
+		`approval:
+  mode_by_label:
+    "type:marketing-ads": "gateed"
+    default:               "auto"
+  command: "/symphony approve"
+  require_write_permission: true`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "gated|auto|handoff") {
+		t.Fatalf("err = %v; want enum violation", err)
+	}
+}
+
+// TestLoadGitHubAuthModes covers the auth selector + per-mode required
+// fields added by the App-installation wire-up. Each case mutates
+// validConfigYAML's `github:` block.
+func TestLoadGitHubAuthModes(t *testing.T) {
+	type tc struct {
+		name       string
+		github     string
+		wantErr    bool
+		wantSubstr string
+	}
+	cases := []tc{
+		{
+			name: "default empty auth = pat",
+			github: `github:
+  token_env: "GITHUB_TOKEN"
+  poll_interval_seconds: 30`,
+		},
+		{
+			name: "explicit pat",
+			github: `github:
+  auth: "pat"
+  token_env: "GITHUB_TOKEN"
+  poll_interval_seconds: 30`,
+		},
+		{
+			name: "app with all required fields",
+			github: `github:
+  auth: "app"
+  app_id_env: "SG_APP_ID"
+  installation_id_env: "SG_INSTALL_ID"
+  private_key_path_env: "SG_APP_PEM"
+  poll_interval_seconds: 30`,
+		},
+		{
+			name: "app missing app_id_env",
+			github: `github:
+  auth: "app"
+  installation_id_env: "SG_INSTALL_ID"
+  private_key_path_env: "SG_APP_PEM"
+  poll_interval_seconds: 30`,
+			wantErr:    true,
+			wantSubstr: "app_id_env",
+		},
+		{
+			name: "app missing installation_id_env",
+			github: `github:
+  auth: "app"
+  app_id_env: "SG_APP_ID"
+  private_key_path_env: "SG_APP_PEM"
+  poll_interval_seconds: 30`,
+			wantErr:    true,
+			wantSubstr: "installation_id_env",
+		},
+		{
+			name: "app missing private_key_path_env",
+			github: `github:
+  auth: "app"
+  app_id_env: "SG_APP_ID"
+  installation_id_env: "SG_INSTALL_ID"
+  poll_interval_seconds: 30`,
+			wantErr:    true,
+			wantSubstr: "private_key_path_env",
+		},
+		{
+			name: "unknown auth",
+			github: `github:
+  auth: "vault"
+  token_env: "GITHUB_TOKEN"
+  poll_interval_seconds: 30`,
+			wantErr:    true,
+			wantSubstr: "github.auth",
+		},
+	}
+	original := `github:
+  token_env: "GITHUB_TOKEN"
+  poll_interval_seconds: 30`
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			body := strings.Replace(validConfigYAML(), original, c.github, 1)
+			p := writeTempConfig(t, body)
+			_, err := Load(p)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", c.wantSubstr)
+				}
+				if !strings.Contains(err.Error(), c.wantSubstr) {
+					t.Fatalf("err = %v; want substring %q", err, c.wantSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoadApprovalModeByLabelOnlyMap parses successfully.
+func TestLoadApprovalModeByLabelOnlyMap(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`approval:
+  mode: "auto"
+  command: "/symphony approve"
+  require_write_permission: true`,
+		`approval:
+  mode_by_label:
+    "type:marketing-ads": "gated"
+    "type:code":          "auto"
+    default:               "auto"
+  command: "/symphony approve"
+  require_write_permission: true`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Approval.ModeByLabel.IsEmpty() {
+		t.Fatalf("mode_by_label empty")
+	}
+	if got := cfg.Approval.ModeByLabel.Values["type:marketing-ads"]; got != "gated" {
+		t.Fatalf("unexpected mode for marketing-ads: %q", got)
 	}
 }

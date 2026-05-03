@@ -264,6 +264,39 @@ func TestSandboxFromArgs(t *testing.T) {
 	}
 }
 
+// TestSandboxForPhaseAxis covers per-axis sandbox resolution for the
+// app-server backend: `type:research` switches the implementation phase
+// from workspace-write (default) to read-only.
+func TestSandboxForPhaseAxis(t *testing.T) {
+	cfg := config.CodexConfig{
+		Mode: "app-server",
+		ImplementationArgsByLabel: config.OrderedMap[[]string]{
+			Keys: []string{"type:research", "default"},
+			Values: map[string][]string{
+				"type:research": {"--sandbox", "read-only"},
+				"default":       {"--sandbox", "workspace-write"},
+			},
+		},
+	}
+	cases := []struct {
+		phase   types.Phase
+		axisKey string
+		want    string
+	}{
+		{types.PhaseImplementation, "type:research", "read-only"},
+		{types.PhaseImplementation, "", "workspace-write"},
+		{types.PhaseImplementation, "type:unknown", "workspace-write"},
+		// Planning has no by-label map → falls back to scalar (empty) → default.
+		{types.PhasePlanning, "type:research", "read-only"},
+	}
+	for _, tc := range cases {
+		got := sandboxForPhaseAxis(cfg, tc.phase, tc.axisKey)
+		if got != tc.want {
+			t.Errorf("sandboxForPhaseAxis(%q,%q)=%q, want %q", tc.phase, tc.axisKey, got, tc.want)
+		}
+	}
+}
+
 func TestSandboxForPhase_Defaults(t *testing.T) {
 	cfg := config.CodexConfig{}
 	for _, p := range []types.Phase{types.PhasePlanning, types.PhaseImplementation, types.PhaseReview} {

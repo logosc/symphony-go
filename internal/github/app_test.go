@@ -55,7 +55,7 @@ func TestNewAppClient_RejectsInvalidInputs(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := NewAppClient(context.Background(), tc.auth, tc.full)
+			_, _, err := NewAppClient(context.Background(), tc.auth, tc.full)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -68,11 +68,11 @@ func TestNewAppClient_RejectsInvalidInputs(t *testing.T) {
 
 func TestNewAppClient_AcceptsValidInputs(t *testing.T) {
 	t.Parallel()
-	pem := generateTestPEM(t)
-	cli, err := NewAppClient(context.Background(), AppAuth{
+	pemBytes := generateTestPEM(t)
+	cli, creds, err := NewAppClient(context.Background(), AppAuth{
 		AppID:          12345,
 		InstallationID: 67890,
-		PrivateKeyPEM:  pem,
+		PrivateKeyPEM:  pemBytes,
 	}, "logosc/symphony-go")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -80,8 +80,14 @@ func TestNewAppClient_AcceptsValidInputs(t *testing.T) {
 	if cli == nil {
 		t.Fatal("nil client")
 	}
+	if creds == nil {
+		t.Fatal("nil creds")
+	}
 	// The returned Client satisfies the interface (no API call needed).
 	var _ Client = cli
+	// AppCreds satisfies the interface; we don't call Token here because
+	// it would attempt a network round-trip to api.github.com.
+	var _ AppCreds = creds
 }
 
 // generateTestPEM produces a fresh 2048-bit RSA key encoded as a PKCS#1

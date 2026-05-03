@@ -202,7 +202,7 @@ func (cr *CodexRunner) openSession(ctx context.Context, req types.RunRequest) (*
 // openSessionWithWatchdog is openSession but attaches an event-inactivity
 // watchdog so the readLoop can touch it on every JSON-RPC frame.
 func (cr *CodexRunner) openSessionWithWatchdog(ctx context.Context, req types.RunRequest, watchdog *stallWatchdog) (*codexSession, error) {
-	sandbox := sandboxForPhase(cr.codexCfg, req.Phase)
+	sandbox := sandboxForPhaseAxis(cr.codexCfg, req.Phase, req.AxisKey)
 
 	cmd := osexec.CommandContext(ctx, cr.command, "app-server")
 	cmd.Dir = req.RepoPath
@@ -654,15 +654,32 @@ func extractThreadID(resp *jsonrpcMessage) string {
 // sandboxForPhase resolves the per-thread sandbox value for the given
 // phase by scanning the matching CodexConfig argv slice for a `--sandbox`
 // flag. When absent, defaults to the safest value, "read-only".
+//
+// Equivalent to sandboxForPhaseAxis with an empty axis key.
 func sandboxForPhase(cfg config.CodexConfig, phase types.Phase) string {
+	return sandboxForPhaseAxis(cfg, phase, "")
+}
+
+// sandboxForPhaseAxis is the per-axis variant of sandboxForPhase. When
+// axisKey is non-empty and the matching `*_args_by_label` map is set, the
+// resolved per-axis argv slice is scanned for `--sandbox` first; otherwise
+// the scalar slice is used. Returns "read-only" when no flag is found.
+func sandboxForPhaseAxis(cfg config.CodexConfig, phase types.Phase, axisKey string) string {
 	var args []string
+	var byLabel config.OrderedMap[[]string]
 	switch phase {
 	case types.PhasePlanning:
 		args = cfg.PlanningArgs
+		byLabel = cfg.PlanningArgsByLabel
 	case types.PhaseImplementation:
 		args = cfg.ImplementationArgs
+		byLabel = cfg.ImplementationArgsByLabel
 	case types.PhaseReview:
 		args = cfg.ReviewArgs
+		byLabel = cfg.ReviewArgsByLabel
+	}
+	if v, ok := resolveByAxisStrings(byLabel, axisKey); ok {
+		args = v
 	}
 	if v := sandboxFromArgs(args); v != "" {
 		return v

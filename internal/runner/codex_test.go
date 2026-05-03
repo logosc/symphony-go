@@ -47,12 +47,71 @@ func TestCodexBuildArgvSnapshot(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.phase), func(t *testing.T) {
-			got, err := cr.buildArgv(tc.phase)
+			got, err := cr.buildArgv(tc.phase, "")
 			if err != nil {
 				t.Fatalf("buildArgv(%q) error: %v", tc.phase, err)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("buildArgv(%q) = %v, want %v", tc.phase, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCodexBuildArgvPerAxis verifies per-axis sandbox/argv selection.
+// type:research gets read-only across all phases (incl. implementation);
+// type:code keeps workspace-write for implementation. An empty AxisKey
+// falls back to the "default" entry, and an unknown axis falls back too.
+func TestCodexBuildArgvPerAxis(t *testing.T) {
+	cr := NewCodexRunner(
+		config.AgentConfig{Provider: "codex"},
+		config.CodexConfig{
+			Mode: "exec",
+			ImplementationArgsByLabel: config.OrderedMap[[]string]{
+				Keys: []string{"type:research", "type:code", "default"},
+				Values: map[string][]string{
+					"type:research": {"--sandbox", "read-only"},
+					"type:code":     {"--sandbox", "workspace-write"},
+					"default":       {"--sandbox", "workspace-write"},
+				},
+			},
+			PlanningArgsByLabel: config.OrderedMap[[]string]{
+				Keys: []string{"default"},
+				Values: map[string][]string{
+					"default": {"--sandbox", "read-only"},
+				},
+			},
+			ReviewArgsByLabel: config.OrderedMap[[]string]{
+				Keys: []string{"default"},
+				Values: map[string][]string{
+					"default": {"--sandbox", "read-only"},
+				},
+			},
+		},
+		config.EnvConfig{},
+		config.AuditConfig{},
+	)
+
+	cases := []struct {
+		name     string
+		phase    types.Phase
+		axisKey  string
+		wantArgv []string
+	}{
+		{"research-impl-readonly", types.PhaseImplementation, "type:research", []string{"exec", "--json", "--sandbox", "read-only"}},
+		{"code-impl-workspace", types.PhaseImplementation, "type:code", []string{"exec", "--json", "--sandbox", "workspace-write"}},
+		{"empty-axis-default", types.PhaseImplementation, "", []string{"exec", "--json", "--sandbox", "workspace-write"}},
+		{"unknown-axis-default", types.PhaseImplementation, "type:nope", []string{"exec", "--json", "--sandbox", "workspace-write"}},
+		{"planning-readonly", types.PhasePlanning, "type:research", []string{"exec", "--json", "--sandbox", "read-only"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := cr.buildArgv(tc.phase, tc.axisKey)
+			if err != nil {
+				t.Fatalf("buildArgv: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.wantArgv) {
+				t.Errorf("buildArgv = %v, want %v", got, tc.wantArgv)
 			}
 		})
 	}

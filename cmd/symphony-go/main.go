@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/logosc/symphony-go/internal/approval"
@@ -103,17 +104,30 @@ func runCommand(args []string) int {
 	defer func() { _ = auditHandler.Close() }()
 	slog.SetDefault(slog.New(auditHandler))
 
-	token := os.Getenv(cfg.GitHub.TokenEnv)
-	if token == "" {
-		slog.Error("github token env var is empty", "env", cfg.GitHub.TokenEnv)
-		return 2
-	}
-
-	wfPath := filepath.Join(cfg.Repo.LocalPath, cfg.Repo.WorkflowFile)
-	wf, err := config.LoadWorkflow(wfPath)
-	if err != nil {
-		slog.Error("workflow load", "path", wfPath, "err", err)
-		return 2
+	var (
+		wf  string
+		wfs map[string]string
+	)
+	if !cfg.Repo.WorkflowFiles.IsEmpty() {
+		wfs = make(map[string]string, len(cfg.Repo.WorkflowFiles.Keys))
+		for _, key := range cfg.Repo.WorkflowFiles.Keys {
+			rel := cfg.Repo.WorkflowFiles.Values[key]
+			p := filepath.Join(cfg.Repo.LocalPath, rel)
+			body, err := config.LoadWorkflow(p)
+			if err != nil {
+				slog.Error("workflow load", "key", key, "path", p, "err", err)
+				return 2
+			}
+			wfs[key] = body
+		}
+	} else {
+		wfPath := filepath.Join(cfg.Repo.LocalPath, cfg.Repo.WorkflowFile)
+		body, err := config.LoadWorkflow(wfPath)
+		if err != nil {
+			slog.Error("workflow load", "path", wfPath, "err", err)
+			return 2
+		}
+		wf = body
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -132,9 +146,9 @@ func runCommand(args []string) int {
 	}
 	defer func() { _ = release() }()
 
-	gh, err := github.NewClient(ctx, token, cfg.Repo.FullName)
+	gh, tokenFn, staticToken, err := buildGitHubAuth(ctx, cfg)
 	if err != nil {
-		slog.Error("github client", "err", err)
+		slog.Error("github auth", "err", err)
 		return 2
 	}
 
@@ -162,14 +176,16 @@ func runCommand(args []string) int {
 	}
 
 	orch, err := orchestrator.New(orchestrator.Deps{
-		Config:         cfg,
-		GitHub:         gh,
-		State:          store,
-		WorkspaceMgr:   wsMgr,
-		AgentRunner:    agentRunner,
-		Reviewer:       reviewer,
-		PromptTemplate: wf,
-		GitHubToken:    token,
+		Config:          cfg,
+		GitHub:          gh,
+		State:           store,
+		WorkspaceMgr:    wsMgr,
+		AgentRunner:     agentRunner,
+		Reviewer:        reviewer,
+		PromptTemplate:  wf,
+		PromptTemplates: wfs,
+		GitHubToken:     staticToken,
+		GitHubTokenFn:   tokenFn,
 	})
 	if err != nil {
 		slog.Error("orchestrator new", "err", err)
@@ -234,6 +250,72 @@ func anyRuleNeedsReviewer(rules []config.AutoRule) bool {
 		}
 	}
 	return false
+}
+
+// buildGitHubAuth resolves credentials according to cfg.GitHub.Auth and
+// returns:
+//   - a github.Client (PAT- or App-installation-backed; the orchestrator
+//     does not care which)
+//   - tokenFn: a non-nil func that mints a fresh token for `git push`,
+//     used in App mode where the installation token rotates hourly. Nil
+//     in PAT mode (the static token is sufficient).
+//   - staticToken: the PAT value in PAT mode; empty in App mode.
+//
+// On error the error message names the offending env var or config field.
+func buildGitHubAuth(ctx context.Context, cfg *config.Config) (github.Client, func(context.Context) (string, error), string, error) {
+	switch cfg.GitHub.Auth {
+	case "", "pat":
+		token := os.Getenv(cfg.GitHub.TokenEnv)
+		if token == "" {
+			return nil, nil, "", fmt.Errorf("github token env var %q is empty (cfg.github.token_env)", cfg.GitHub.TokenEnv)
+		}
+		cli, err := github.NewClient(ctx, token, cfg.Repo.FullName)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return cli, nil, token, nil
+	case "app":
+		appID, err := readInt64Env(cfg.GitHub.AppIDEnv, "github.app_id_env")
+		if err != nil {
+			return nil, nil, "", err
+		}
+		instID, err := readInt64Env(cfg.GitHub.InstallationIDEnv, "github.installation_id_env")
+		if err != nil {
+			return nil, nil, "", err
+		}
+		pemPath := os.Getenv(cfg.GitHub.PrivateKeyPathEnv)
+		if pemPath == "" {
+			return nil, nil, "", fmt.Errorf("github app private-key-path env var %q is empty (cfg.github.private_key_path_env)", cfg.GitHub.PrivateKeyPathEnv)
+		}
+		pemBytes, err := os.ReadFile(pemPath)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("read app private key at %q: %w", pemPath, err)
+		}
+		cli, creds, err := github.NewAppClient(ctx, github.AppAuth{
+			AppID:          appID,
+			InstallationID: instID,
+			PrivateKeyPEM:  pemBytes,
+		}, cfg.Repo.FullName)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return cli, creds.Token, "", nil
+	default:
+		return nil, nil, "", fmt.Errorf("unknown github.auth %q (want \"pat\" or \"app\")", cfg.GitHub.Auth)
+	}
+}
+
+// readInt64Env reads an int64 from the named environment variable.
+func readInt64Env(envName, fieldName string) (int64, error) {
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return 0, fmt.Errorf("%s env var %q is empty", fieldName, envName)
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s env var %q must parse as int64: %w", fieldName, envName, err)
+	}
+	return v, nil
 }
 
 func resolveConfigPath(explicit string) (string, error) {
