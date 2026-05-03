@@ -112,9 +112,9 @@ func Run(ctx context.Context, command string, opts RunOptions) (RunResult, error
 
 // alwaysDrop are env names dropped regardless of allowlist. See SPEC §9.
 var alwaysDrop = map[string]struct{}{
-	"GITHUB_TOKEN":   {},
-	"GH_TOKEN":       {},
-	"SSH_AUTH_SOCK":  {},
+	"GITHUB_TOKEN":  {},
+	"GH_TOKEN":      {},
+	"SSH_AUTH_SOCK": {},
 }
 
 // BuildAgentEnv constructs the env passed to an agent or hook subprocess.

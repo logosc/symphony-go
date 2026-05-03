@@ -43,10 +43,10 @@ func TestNewClientRequiresToken(t *testing.T) {
 func TestComputeLabels(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name           string
-		current        []string
-		remove, add    []string
-		want           []string
+		name        string
+		current     []string
+		remove, add []string
+		want        []string
 	}{
 		{
 			name:    "remove-only",

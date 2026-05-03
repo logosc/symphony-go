@@ -178,8 +178,10 @@ func TestValidateMissingFields(t *testing.T) {
 			wantSub: "repo.full_name",
 		},
 		{
-			name:    "bad full_name format",
-			mutate:  func(s string) string { return strings.Replace(s, `full_name: "OWNER/REPO"`, `full_name: "no-slash"`, 1) },
+			name: "bad full_name format",
+			mutate: func(s string) string {
+				return strings.Replace(s, `full_name: "OWNER/REPO"`, `full_name: "no-slash"`, 1)
+			},
 			wantSub: "OWNER/REPO",
 		},
 		{
@@ -188,8 +190,10 @@ func TestValidateMissingFields(t *testing.T) {
 			wantSub: "repo.local_path",
 		},
 		{
-			name:    "bad poll_interval",
-			mutate:  func(s string) string { return strings.Replace(s, `poll_interval_seconds: 30`, `poll_interval_seconds: -1`, 1) },
+			name: "bad poll_interval",
+			mutate: func(s string) string {
+				return strings.Replace(s, `poll_interval_seconds: 30`, `poll_interval_seconds: -1`, 1)
+			},
 			wantSub: "github.poll_interval_seconds",
 		},
 		{
@@ -208,8 +212,10 @@ func TestValidateMissingFields(t *testing.T) {
 			wantSub: "codex.mode",
 		},
 		{
-			name:    "bad redact pattern",
-			mutate:  func(s string) string { return strings.Replace(s, `redact_patterns: ["sk-[A-Za-z0-9_-]+"]`, `redact_patterns: ["[unterminated"]`, 1) },
+			name: "bad redact pattern",
+			mutate: func(s string) string {
+				return strings.Replace(s, `redact_patterns: ["sk-[A-Za-z0-9_-]+"]`, `redact_patterns: ["[unterminated"]`, 1)
+			},
 			wantSub: "audit.redact_patterns",
 		},
 	}

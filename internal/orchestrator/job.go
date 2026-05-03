@@ -13,8 +13,8 @@ import (
 
 	"github.com/logosc/symphony-go/internal/approval"
 	"github.com/logosc/symphony-go/internal/config"
-	"github.com/logosc/symphony-go/internal/github"
 	internalexec "github.com/logosc/symphony-go/internal/exec"
+	"github.com/logosc/symphony-go/internal/github"
 	"github.com/logosc/symphony-go/internal/types"
 	"github.com/logosc/symphony-go/internal/workspace"
 )

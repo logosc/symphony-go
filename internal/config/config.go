@@ -68,12 +68,12 @@ type ApprovalConfig struct {
 // AutoConfig configures auto-approval: rules engine, reviewer agent,
 // fallback behavior, and post-implementation diff verification.
 type AutoConfig struct {
-	Rules                  []AutoRule      `yaml:"rules"`
-	Reviewer               ReviewerConfig  `yaml:"reviewer"`
-	FallbackOnReject       string          `yaml:"fallback_on_reject"`
-	FallbackOnNoRuleMatch  string          `yaml:"fallback_on_no_rule_match"`
-	VerifyDiffMatchesPlan  bool            `yaml:"verify_diff_matches_plan"`
-	MaxDiffDriftFiles      int             `yaml:"max_diff_drift_files"`
+	Rules                 []AutoRule     `yaml:"rules"`
+	Reviewer              ReviewerConfig `yaml:"reviewer"`
+	FallbackOnReject      string         `yaml:"fallback_on_reject"`
+	FallbackOnNoRuleMatch string         `yaml:"fallback_on_no_rule_match"`
+	VerifyDiffMatchesPlan bool           `yaml:"verify_diff_matches_plan"`
+	MaxDiffDriftFiles     int            `yaml:"max_diff_drift_files"`
 }
 
 // AutoRule is a single auto-approval rule. Rules are evaluated in order and
