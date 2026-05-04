@@ -201,8 +201,17 @@ type AgentConfig struct {
 	// provider when present). Required to carry a "default" key.
 	// Mutually exclusive with Model (rejected at parse). See Proposal
 	// 0001 §11 question #1.
-	ModelByLabel   OrderedMap[string] `yaml:"model_by_label"`
-	TimeoutSeconds int                `yaml:"timeout_seconds"`
+	ModelByLabel OrderedMap[string] `yaml:"model_by_label"`
+	// ReasoningEffort is passed to model providers that expose a separate
+	// reasoning-effort knob. For Codex CLI this is sent as
+	// `-c model_reasoning_effort="<value>"`; it is intentionally separate
+	// from Model so configs do not encode effort into model names.
+	ReasoningEffort string `yaml:"reasoning_effort"`
+	// ReasoningEffortByLabel is the optional per-axis variant of
+	// ReasoningEffort. Required to carry a "default" key and mutually
+	// exclusive with ReasoningEffort.
+	ReasoningEffortByLabel OrderedMap[string] `yaml:"reasoning_effort_by_label"`
+	TimeoutSeconds         int                `yaml:"timeout_seconds"`
 	// MultiTurn enables provider-driven multi-turn continuation during the
 	// implementation phase. The orchestrator only honors this when the
 	// runner reports support (currently `codex.mode == "app-server"`); for

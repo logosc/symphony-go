@@ -192,6 +192,24 @@ func Validate(cfg *Config) error {
 	if !cfg.Agent.ModelByLabel.IsEmpty() && !cfg.Agent.ModelByLabel.HasDefault() {
 		return fmt.Errorf("config: agent.model_by_label must contain a \"default\" key")
 	}
+	if cfg.Agent.ReasoningEffort != "" && !cfg.Agent.ReasoningEffortByLabel.IsEmpty() {
+		return fmt.Errorf("config: agent.reasoning_effort and agent.reasoning_effort_by_label are mutually exclusive")
+	}
+	if cfg.Agent.ReasoningEffort != "" {
+		if err := validateReasoningEffort("agent.reasoning_effort", cfg.Agent.ReasoningEffort); err != nil {
+			return err
+		}
+	}
+	if !cfg.Agent.ReasoningEffortByLabel.IsEmpty() {
+		if !cfg.Agent.ReasoningEffortByLabel.HasDefault() {
+			return fmt.Errorf("config: agent.reasoning_effort_by_label must contain a \"default\" key")
+		}
+		for k, v := range cfg.Agent.ReasoningEffortByLabel.Values {
+			if err := validateReasoningEffort(fmt.Sprintf("agent.reasoning_effort_by_label[%q]", k), v); err != nil {
+				return err
+			}
+		}
+	}
 	if cfg.Agent.TimeoutSeconds <= 0 {
 		return fmt.Errorf("config: agent.timeout_seconds must be > 0")
 	}
@@ -277,6 +295,15 @@ func checkScalarMapCollision(knob string, scalar []string, m OrderedMap[[]string
 		return fmt.Errorf("config: %s_by_label must contain a \"default\" key", knob)
 	}
 	return nil
+}
+
+func validateReasoningEffort(knob, value string) error {
+	switch value {
+	case "low", "medium", "high", "xhigh":
+		return nil
+	default:
+		return fmt.Errorf("config: %s %q must be low|medium|high|xhigh", knob, value)
+	}
 }
 
 // fullNameRe matches GitHub OWNER/REPO with permissive characters.

@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,14 +107,20 @@ func (cr *CodexRunner) phaseArgs(phase types.Phase, axisKey string) ([]string, e
 }
 
 // buildArgv constructs the full argv (excluding the executable itself)
-// for the given phase: ["exec", "--json", ...phase-args...]. axisKey is
-// forwarded to phaseArgs for per-axis selection.
+// for the given phase: ["exec", "--json", ...model args..., ...phase-args...].
+// axisKey is forwarded to phaseArgs for per-axis selection.
 func (cr *CodexRunner) buildArgv(phase types.Phase, axisKey string) ([]string, error) {
 	pa, err := cr.phaseArgs(phase, axisKey)
 	if err != nil {
 		return nil, err
 	}
 	argv := []string{"exec", "--json"}
+	if cr.agentCfg.Model != "" {
+		argv = append(argv, "--model", cr.agentCfg.Model)
+	}
+	if cr.agentCfg.ReasoningEffort != "" {
+		argv = append(argv, "-c", "model_reasoning_effort="+strconv.Quote(cr.agentCfg.ReasoningEffort))
+	}
 	argv = append(argv, pa...)
 	return argv, nil
 }

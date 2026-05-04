@@ -117,6 +117,32 @@ func TestCodexBuildArgvPerAxis(t *testing.T) {
 	}
 }
 
+func TestCodexBuildArgvModelAndReasoningEffort(t *testing.T) {
+	cr := NewCodexRunner(
+		config.AgentConfig{Provider: "codex", Model: "gpt-5.5", ReasoningEffort: "medium"},
+		config.CodexConfig{
+			Mode:               "exec",
+			ImplementationArgs: []string{"--sandbox", "workspace-write"},
+		},
+		config.EnvConfig{},
+		config.AuditConfig{},
+	)
+
+	got, err := cr.buildArgv(types.PhaseImplementation, "")
+	if err != nil {
+		t.Fatalf("buildArgv: %v", err)
+	}
+	want := []string{
+		"exec", "--json",
+		"--model", "gpt-5.5",
+		"-c", `model_reasoning_effort="medium"`,
+		"--sandbox", "workspace-write",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildArgv = %v, want %v", got, want)
+	}
+}
+
 func TestCodexUnknownModeRejected(t *testing.T) {
 	cr := NewCodexRunner(
 		config.AgentConfig{},

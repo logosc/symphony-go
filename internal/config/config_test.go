@@ -694,6 +694,64 @@ func TestLoadAgentModelByLabelMissingDefault(t *testing.T) {
 	}
 }
 
+func TestLoadAgentReasoningEffortByLabelCollision(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`agent:
+  provider: "claude"
+  model: "sonnet"
+  timeout_seconds: 3600`,
+		`agent:
+  provider: "codex"
+  model: "gpt-5.5"
+  reasoning_effort: "medium"
+  reasoning_effort_by_label:
+    "type:mockup": "medium"
+    default:        "medium"
+  timeout_seconds: 3600`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "agent.reasoning_effort") || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want reasoning effort+map collision", err)
+	}
+}
+
+func TestLoadAgentReasoningEffortByLabelMissingDefault(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`agent:
+  provider: "claude"
+  model: "sonnet"
+  timeout_seconds: 3600`,
+		`agent:
+  provider: "codex"
+  model: "gpt-5.5"
+  reasoning_effort_by_label:
+    "type:mockup": "medium"
+  timeout_seconds: 3600`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "reasoning_effort_by_label") || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want missing-default", err)
+	}
+}
+
+func TestLoadAgentReasoningEffortInvalid(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`agent:
+  provider: "claude"
+  model: "sonnet"
+  timeout_seconds: 3600`,
+		`agent:
+  provider: "codex"
+  model: "gpt-5.5"
+  reasoning_effort: "mediumest"
+  timeout_seconds: 3600`, 1)
+	p := writeTempConfig(t, body)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "low|medium|high|xhigh") {
+		t.Fatalf("err = %v; want reasoning effort enum violation", err)
+	}
+}
+
 // TestLoadAgentProviderModelByLabelOnlyMap parses a fully per-axis agent
 // section (no scalar provider/model) and asserts the maps round-trip.
 func TestLoadAgentProviderModelByLabelOnlyMap(t *testing.T) {
@@ -731,6 +789,39 @@ func TestLoadAgentProviderModelByLabelOnlyMap(t *testing.T) {
 	}
 	if got := cfg.Agent.ModelByLabel.Values["type:research"]; got != "gpt-5-codex" {
 		t.Errorf("ModelByLabel[type:research] = %q; want gpt-5-codex", got)
+	}
+}
+
+func TestLoadAgentReasoningEffortByLabelOnlyMap(t *testing.T) {
+	body := strings.Replace(validConfigYAML(),
+		`agent:
+  provider: "claude"
+  model: "sonnet"
+  timeout_seconds: 3600`,
+		`agent:
+  provider_by_label:
+    "type:mockup": "codex"
+    default:       "claude"
+  model_by_label:
+    "type:mockup": "gpt-5.5"
+    default:       "sonnet"
+  reasoning_effort_by_label:
+    "type:mockup": "medium"
+    default:       "medium"
+  timeout_seconds: 3600`, 1)
+	p := writeTempConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ReasoningEffort != "" {
+		t.Errorf("ReasoningEffort = %q; want empty (map mode)", cfg.Agent.ReasoningEffort)
+	}
+	if cfg.Agent.ReasoningEffortByLabel.IsEmpty() {
+		t.Fatalf("ReasoningEffortByLabel empty")
+	}
+	if got := cfg.Agent.ReasoningEffortByLabel.Values["type:mockup"]; got != "medium" {
+		t.Errorf("ReasoningEffortByLabel[type:mockup] = %q; want medium", got)
 	}
 }
 

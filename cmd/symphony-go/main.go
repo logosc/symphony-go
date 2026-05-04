@@ -254,12 +254,13 @@ func doctorCommand(args []string) int {
 // agent.provider_by_label or agent.model_by_label is set. Returns nil
 // (no error) when neither is set. The union of both maps' keys is
 // walked; for each key, a synthetic AgentConfig is constructed by
-// substituting Provider/Model from the maps (falling back to the scalar
-// values when a key is missing from one of the maps).
+// substituting Provider/Model/ReasoningEffort from the maps (falling back
+// to the scalar values when a key is missing from one of the maps).
 func buildAgentRunnersByAxis(cfg *config.Config) (map[string]runner.AgentRunner, error) {
 	pmap := cfg.Agent.ProviderByLabel
 	mmap := cfg.Agent.ModelByLabel
-	if pmap.IsEmpty() && mmap.IsEmpty() {
+	emap := cfg.Agent.ReasoningEffortByLabel
+	if pmap.IsEmpty() && mmap.IsEmpty() && emap.IsEmpty() {
 		return nil, nil
 	}
 	// Union of keys, preserving declaration order from provider map first.
@@ -279,23 +280,42 @@ func buildAgentRunnersByAxis(cfg *config.Config) (map[string]runner.AgentRunner,
 		seen[k] = struct{}{}
 		keys = append(keys, k)
 	}
+	for _, k := range emap.Keys {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
 	out := make(map[string]runner.AgentRunner, len(keys))
 	for _, k := range keys {
 		provider := cfg.Agent.Provider
 		if v, ok := pmap.Values[k]; ok {
 			provider = v
+		} else if v, ok := pmap.Values["default"]; ok {
+			provider = v
 		}
 		model := cfg.Agent.Model
 		if v, ok := mmap.Values[k]; ok {
 			model = v
+		} else if v, ok := mmap.Values["default"]; ok {
+			model = v
+		}
+		reasoningEffort := cfg.Agent.ReasoningEffort
+		if v, ok := emap.Values[k]; ok {
+			reasoningEffort = v
+		} else if v, ok := emap.Values["default"]; ok {
+			reasoningEffort = v
 		}
 		synth := cfg.Agent
 		synth.Provider = provider
 		synth.Model = model
+		synth.ReasoningEffort = reasoningEffort
 		// Wipe the per-axis maps in the synthetic copy; they're not used
 		// by the runner constructor and would be misleading.
 		synth.ProviderByLabel = config.OrderedMap[string]{}
 		synth.ModelByLabel = config.OrderedMap[string]{}
+		synth.ReasoningEffortByLabel = config.OrderedMap[string]{}
 		r, err := buildRunner(provider, synth, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("axis %q: %w", k, err)
