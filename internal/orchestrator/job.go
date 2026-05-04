@@ -49,9 +49,13 @@ You are in PLANNING phase. Do not edit any source files in the
 repository. Produce a written plan in markdown — any structure you like
 (headings, tables, bullets, prose).
 
-Additionally, write a JSON file at the absolute path in the environment
-variable SYMPHONY_PLAN_SCOPE_PATH using your file-write tool. The file
-must have this exact shape:
+Before you write the human-readable plan, you MUST write a JSON file at
+the absolute path in the environment variable SYMPHONY_PLAN_SCOPE_PATH
+using your file-write tool. This side-channel file is required for
+approval routing. It is not a source-code edit and it must not be placed
+inside the repository.
+
+The file must contain only valid JSON with this exact shape:
 
   {
     "files_touched": ["relative/path/one", "relative/path/two"],
@@ -61,11 +65,13 @@ must have this exact shape:
   }
 
 The orchestrator parses this file to gate auto-approval. Be conservative
-in files_touched — list every file you will modify.
+in files_touched — list every file you will modify, including generated
+assets and rebuilt bundles. Do not mention that you wrote the side-channel
+file unless there is a problem.
 
-If for any reason you cannot write the JSON file, fall back to ending
-your markdown with this EXACT raw YAML block (heading on its own line,
-no fences, no bold, no bullets):
+Only if your file-write tool is unavailable or the file write fails, fall
+back to ending your markdown with this EXACT raw YAML block (heading on
+its own line, no fences, no bold, no bullets):
 
 ## Scope
 files_touched:
@@ -182,7 +188,12 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 	planPrompt := rendered + planSuffix
 
-	planScopePath := filepath.Join(layout.HomePath, "symphony-plan-scope.json")
+	repoScopeDir := workspace.SanitizeSlug(cfg.Repo.FullName)
+	planScopePath := filepath.Join(os.TempDir(), "symphony-go", repoScopeDir,
+		fmt.Sprintf("issue-%d-attempt-%d-plan-scope.json", issue.Number, job.Attempt))
+	if err := os.MkdirAll(filepath.Dir(planScopePath), 0o700); err != nil {
+		return o.markBlocked(ctx, job, fmt.Sprintf("prepare plan scope path: %v", err))
+	}
 	_ = os.Remove(planScopePath) // ensure we don't read a stale file from a prior attempt
 
 	log.Info("planning_started", "axis_key", job.AxisKey, "axis_source", job.AxisSource)
