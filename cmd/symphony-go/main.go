@@ -154,7 +154,28 @@ func runCommand(args []string) int {
 
 	wsMgr := workspace.NewManager(cfg.Repo.LocalPath)
 
-	agentRunner, err := buildRunner(cfg.Agent.Provider, cfg.Agent, cfg)
+	defaultAgentCfg := cfg.Agent
+	defaultProvider := cfg.Agent.Provider
+	if defaultProvider == "" {
+		if v, ok := cfg.Agent.ProviderByLabel.Values["default"]; ok {
+			defaultProvider = v
+			defaultAgentCfg.Provider = v
+		}
+	}
+	if defaultAgentCfg.Model == "" {
+		if v, ok := cfg.Agent.ModelByLabel.Values["default"]; ok {
+			defaultAgentCfg.Model = v
+		}
+	}
+	if defaultAgentCfg.ReasoningEffort == "" {
+		if v, ok := cfg.Agent.ReasoningEffortByLabel.Values["default"]; ok {
+			defaultAgentCfg.ReasoningEffort = v
+		}
+	}
+	defaultAgentCfg.ProviderByLabel = config.OrderedMap[string]{}
+	defaultAgentCfg.ModelByLabel = config.OrderedMap[string]{}
+	defaultAgentCfg.ReasoningEffortByLabel = config.OrderedMap[string]{}
+	agentRunner, err := buildRunner(defaultProvider, defaultAgentCfg, cfg)
 	if err != nil {
 		slog.Error("agent runner", "err", err)
 		return 2
