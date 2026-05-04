@@ -211,7 +211,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 
 	// 8. Approval routing.
-	mode := types.ApprovalMode(o.resolveApprovalMode(job))
+	mode := types.ApprovalMode(o.resolveApprovalMode(job, issue.Labels))
 	switch mode {
 	case types.ApprovalHandoff:
 		job.ApprovalPath = types.ApprovalPathHandoff
@@ -369,7 +369,7 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		return o.markFailed(ctx, job, fmt.Sprintf("implementation agent: %v", ierr))
 	}
 	if !implResult.Success {
-		if o.resolveApprovalMode(job) != "handoff" {
+		if o.resolveApprovalMode(job, issue.Labels) != "handoff" {
 			return o.markFailed(ctx, job, "implementation agent reported failure")
 		}
 		statusOut, statusErr := gitStatusPorcelain(ctx, layout.RepoPath)
@@ -409,7 +409,7 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 
 	// 12. Diff verification (auto only). Use the resolved per-axis mode so
 	// per-axis overrides honor the same gate as planning-time routing.
-	if o.resolveApprovalMode(job) == "auto" && cfg.Auto.VerifyDiffMatchesPlan && job.PlanScope != nil {
+	if o.resolveApprovalMode(job, issue.Labels) == "auto" && cfg.Auto.VerifyDiffMatchesPlan && job.PlanScope != nil {
 		drift := approval.VerifyDiff(statusOut, *job.PlanScope, cfg.Auto.MaxDiffDriftFiles)
 		if drift.Drifted {
 			body := fmt.Sprintf("[symphony-go] diff drift detected (%d extra files exceed max %d):\n- %s",
@@ -945,16 +945,26 @@ func (o *Orchestrator) anyPerAxisMapSet() bool {
 	return false
 }
 
-// resolveApprovalMode returns the effective approval mode for a job,
-// honoring cfg.Approval.ModeByLabel (per-axis) when set and falling back
-// to the scalar cfg.Approval.Mode otherwise. The job's frozen AxisKey
-// drives the lookup; an empty AxisKey or no matching key falls through
-// to the map's "default" entry (Validate ensures one exists when the map
-// is non-empty). See Proposal 0001 §5.
-func (o *Orchestrator) resolveApprovalMode(job *types.Job) string {
+// resolveApprovalMode returns the effective approval mode for a job.
+// When mode_by_label is configured, concrete issue labels win in
+// configured order. If no concrete label matches, the job's frozen
+// AxisKey is used for back-compat with per-axis configs, then "default".
+func (o *Orchestrator) resolveApprovalMode(job *types.Job, issueLabels []string) string {
 	cfg := o.deps.Config
 	if cfg.Approval.ModeByLabel.IsEmpty() {
 		return cfg.Approval.Mode
+	}
+	issueLabelSet := make(map[string]struct{}, len(issueLabels))
+	for _, label := range issueLabels {
+		issueLabelSet[strings.ToLower(label)] = struct{}{}
+	}
+	for _, key := range cfg.Approval.ModeByLabel.Keys {
+		if key == "default" {
+			continue
+		}
+		if _, ok := issueLabelSet[strings.ToLower(key)]; ok {
+			return cfg.Approval.ModeByLabel.Values[key]
+		}
 	}
 	axis := job.AxisKey
 	if axis != "" {
