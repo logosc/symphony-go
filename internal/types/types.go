@@ -88,28 +88,28 @@ type ReviewerDecision struct {
 // Job is the on-disk job state. Persisted to
 // .symphony-go/state/jobs/{issue_number}.json.
 type Job struct {
-	IssueNumber       int               `json:"issue_number"`
-	Repo              string            `json:"repo"`
-	Status            JobStatus         `json:"status"`
-	WorkspaceRoot     string            `json:"workspace_root"`
-	RepoPath          string            `json:"repo_path"`
-	Branch            string            `json:"branch"`
-	PlanCommentID     int64             `json:"plan_comment_id,omitempty"`
-	PlanText          string            `json:"plan_text,omitempty"`
-	PlanScope         *PlanScope        `json:"plan_scope,omitempty"`
-	ApprovalPath      ApprovalPath      `json:"approval_path,omitempty"`
-	ApprovalCommentID int64             `json:"approval_comment_id,omitempty"`
+	IssueNumber       int          `json:"issue_number"`
+	Repo              string       `json:"repo"`
+	Status            JobStatus    `json:"status"`
+	WorkspaceRoot     string       `json:"workspace_root"`
+	RepoPath          string       `json:"repo_path"`
+	Branch            string       `json:"branch"`
+	PlanCommentID     int64        `json:"plan_comment_id,omitempty"`
+	PlanText          string       `json:"plan_text,omitempty"`
+	PlanScope         *PlanScope   `json:"plan_scope,omitempty"`
+	ApprovalPath      ApprovalPath `json:"approval_path,omitempty"`
+	ApprovalCommentID int64        `json:"approval_comment_id,omitempty"`
 	// ApprovalToken, when non-empty, is the random per-plan token the
 	// orchestrator embeds in the plan comment. The gated-mode approval
 	// poller accepts a comment whose trimmed body equals this token in
 	// place of the static cfg.Approval.Command. Reset whenever planning
 	// re-runs so an old approval cannot promote a stale plan. Set only
 	// when cfg.Approval.RequireToken is true.
-	ApprovalToken     string            `json:"approval_token,omitempty"`
-	ReviewerDecision  *ReviewerDecision `json:"reviewer_decision,omitempty"`
-	PRNumber          int               `json:"pr_number,omitempty"`
-	Attempt           int               `json:"attempt"`
-	UpdatedAt         time.Time         `json:"updated_at"`
+	ApprovalToken    string            `json:"approval_token,omitempty"`
+	ReviewerDecision *ReviewerDecision `json:"reviewer_decision,omitempty"`
+	PRNumber         int               `json:"pr_number,omitempty"`
+	Attempt          int               `json:"attempt"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 	// AxisKey is the per-axis label this job was frozen against at claim
 	// time. "default" when no per-axis map is configured or no concrete
 	// label matched. Empty on jobs persisted before the per-axis feature
