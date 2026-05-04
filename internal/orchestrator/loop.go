@@ -135,13 +135,21 @@ func (o *Orchestrator) PollApprovals(ctx context.Context) error {
 func (o *Orchestrator) servicePendingApproval(ctx context.Context, job *types.Job) error {
 	cfg := o.deps.Config
 	since := job.UpdatedAt
-	cmd := cfg.Approval.Command
+	// Match target is either the per-plan token (when RequireToken is on
+	// AND the plan post produced one) or the static slash command. The
+	// token mode forces the approver to actually read the plan and
+	// rotates with reconcile re-plans so a stale approval cannot promote
+	// a fresh plan.
+	matchTarget := cfg.Approval.Command
+	if cfg.Approval.RequireToken && job.ApprovalToken != "" {
+		matchTarget = job.ApprovalToken
+	}
 	comments, err := o.deps.GitHub.ListIssueComments(ctx, job.IssueNumber, since)
 	if err != nil {
 		return err
 	}
 	for _, c := range comments {
-		if strings.TrimSpace(c.Body) != cmd {
+		if strings.TrimSpace(c.Body) != matchTarget {
 			continue
 		}
 		if o.isIgnoredApprovalUser(c.User) {

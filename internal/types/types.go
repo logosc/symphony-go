@@ -99,6 +99,13 @@ type Job struct {
 	PlanScope         *PlanScope        `json:"plan_scope,omitempty"`
 	ApprovalPath      ApprovalPath      `json:"approval_path,omitempty"`
 	ApprovalCommentID int64             `json:"approval_comment_id,omitempty"`
+	// ApprovalToken, when non-empty, is the random per-plan token the
+	// orchestrator embeds in the plan comment. The gated-mode approval
+	// poller accepts a comment whose trimmed body equals this token in
+	// place of the static cfg.Approval.Command. Reset whenever planning
+	// re-runs so an old approval cannot promote a stale plan. Set only
+	// when cfg.Approval.RequireToken is true.
+	ApprovalToken     string            `json:"approval_token,omitempty"`
 	ReviewerDecision  *ReviewerDecision `json:"reviewer_decision,omitempty"`
 	PRNumber          int               `json:"pr_number,omitempty"`
 	Attempt           int               `json:"attempt"`

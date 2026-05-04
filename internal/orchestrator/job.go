@@ -3,8 +3,10 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,10 +188,19 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 
 	// 7. Post plan + parse scope.
-	if strings.TrimSpace(planResult.Text) == "" {
+	planBody := planResult.Text
+	if cfg.Approval.RequireToken {
+		token, terr := newApprovalToken()
+		if terr != nil {
+			return o.markFailed(ctx, job, fmt.Sprintf("approval token: %v", terr))
+		}
+		job.ApprovalToken = token
+		planBody = appendApprovalToken(planBody, token)
+	}
+	if strings.TrimSpace(planBody) == "" {
 		log.Warn("plan_empty")
 	} else {
-		planComment, perr := o.deps.GitHub.PostIssueComment(ctx, issue.Number, planResult.Text)
+		planComment, perr := o.deps.GitHub.PostIssueComment(ctx, issue.Number, planBody)
 		if perr != nil {
 			log.Error("plan comment post failed", "err", perr)
 		} else {
@@ -685,6 +696,38 @@ func (o *Orchestrator) markFailed(ctx context.Context, job *types.Job, reason st
 	job.Status = types.StatusFailed
 	o.deps.Logger.Warn("failed", "issue", job.IssueNumber, "reason", reason)
 	return o.saveJob(job)
+}
+
+// newApprovalToken returns a 4-digit token (1000-9999) for the
+// require-token approval gate. Crypto/rand based so an attacker who has
+// read access cannot predict the next token from the previous one.
+func newApprovalToken() (string, error) {
+	const lo, hi = 1000, 9999
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(hi-lo+1)))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d", lo+int(n.Int64())), nil
+}
+
+// appendApprovalToken appends a `## Approval` footer to the plan body
+// instructing the operator to comment back the given token.
+func appendApprovalToken(planBody, token string) string {
+	footer := fmt.Sprintf(`
+
+---
+
+## Approval
+
+To approve this plan, comment exactly the number `+"`%s`"+` on this issue
+from a write-permission account. The orchestrator will not advance to
+implementation until it sees that comment from a writer.
+
+The token is a one-time read-the-plan check: it changes every time
+planning re-runs (e.g., after a crash + reconcile), so an old approval
+cannot accidentally promote a new plan.
+`, token)
+	return planBody + footer
 }
 
 // resolveGitHubToken returns a fresh GitHub access token suitable for

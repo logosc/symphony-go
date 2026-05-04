@@ -116,6 +116,14 @@ type ApprovalConfig struct {
 	Mode                   string `yaml:"mode"`
 	Command                string `yaml:"command"`
 	RequireWritePermission bool   `yaml:"require_write_permission"`
+	// RequireToken switches the gated-mode approval gate from a fixed
+	// slash command (Command) to a per-plan random numeric token the
+	// orchestrator generates and embeds in the plan comment. Approvers
+	// must comment that exact token. Forces operators to actually read
+	// the plan (you cannot auto-approve from muscle memory) and
+	// invalidates approvals from a stale plan when reconcile re-plans.
+	// Default false; back-compat is preserved.
+	RequireToken bool `yaml:"require_token"`
 	// IgnoredUsers is a list of GitHub logins whose comments must never be
 	// treated as approvals. Matching is case-insensitive. Defaults to the
 	// well-known orchestrator bot logins (`symphony-go[bot]`,
