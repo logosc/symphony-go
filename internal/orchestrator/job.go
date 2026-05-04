@@ -380,15 +380,27 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		log.Warn("handoff_failed_with_diff_continuing")
 	}
 
-	// 11. git status --porcelain.
+	// 11. git status --porcelain. Some runners may commit their own
+	// work; in that case the working tree is clean but the branch still
+	// has a reviewable diff against the base branch.
 	statusOut, err := gitStatusPorcelain(ctx, layout.RepoPath)
 	if err != nil {
 		return o.markFailed(ctx, job, fmt.Sprintf("git status: %v", err))
 	}
+	committedByAgent := false
 	if strings.TrimSpace(statusOut) == "" {
-		_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number,
-			"[symphony-go] implementation produced no diff; marking blocked.")
-		return o.markBlocked(ctx, job, "no changes produced")
+		branchDiffOut, derr := gitDiffNameOnly(ctx, layout.RepoPath, cfg.Repo.BaseBranch)
+		if derr != nil {
+			return o.markFailed(ctx, job, fmt.Sprintf("git diff against base: %v", derr))
+		}
+		if strings.TrimSpace(branchDiffOut) == "" {
+			_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number,
+				"[symphony-go] implementation produced no diff; marking blocked.")
+			return o.markBlocked(ctx, job, "no changes produced")
+		}
+		statusOut = branchDiffOut
+		committedByAgent = true
+		log.Info("using_committed_branch_diff", "base", cfg.Repo.BaseBranch)
 	}
 
 	// 12. Diff verification (auto only). Use the resolved per-axis mode so
@@ -434,10 +446,14 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 	log.Info("validation_completed", "n", len(results))
 
 	// 14. Commit.
-	if err := gitCommitAll(ctx, layout.RepoPath, fmt.Sprintf("Implement issue #%d", issue.Number)); err != nil {
-		return o.markFailed(ctx, job, fmt.Sprintf("git commit: %v", err))
+	if !committedByAgent {
+		if err := gitCommitAll(ctx, layout.RepoPath, fmt.Sprintf("Implement issue #%d", issue.Number)); err != nil {
+			return o.markFailed(ctx, job, fmt.Sprintf("git commit: %v", err))
+		}
+		log.Info("committed")
+	} else {
+		log.Info("commit_skipped", "reason", "agent already committed branch diff")
 	}
-	log.Info("committed")
 
 	// 15. Push.
 	pushToken, tokErr := o.resolveGitHubToken(ctx)
@@ -710,6 +726,19 @@ func labelForStatus(cfg *config.Config, s types.JobStatus) string {
 // gitStatusPorcelain runs `git -C repoPath status --porcelain`.
 func gitStatusPorcelain(ctx context.Context, repoPath string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "status", "--porcelain")
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, errb.String())
+	}
+	return out.String(), nil
+}
+
+// gitDiffNameOnly returns files changed by HEAD compared with origin/base.
+func gitDiffNameOnly(ctx context.Context, repoPath, baseBranch string) (string, error) {
+	baseRef := "origin/" + baseBranch
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "diff", "--name-only", baseRef+"...HEAD")
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

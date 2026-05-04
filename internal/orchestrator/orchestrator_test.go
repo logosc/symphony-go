@@ -220,6 +220,31 @@ func implWriter(rnr *runner.FakeRunner, files []string) {
 	}
 }
 
+// committedImplWriter simulates an agent that commits its own changes
+// before returning success.
+func committedImplWriter(rnr *runner.FakeRunner, files []string) {
+	implWriter(rnr, files)
+	previous := rnr.OnRun
+	rnr.OnRun = func(ctx context.Context, req types.RunRequest) (types.RunResult, error) {
+		res, err := previous(ctx, req)
+		if err != nil || req.Phase != types.PhaseImplementation {
+			return res, err
+		}
+		cmd := exec.CommandContext(ctx, "git", "-C", req.RepoPath, "add", "-A")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return types.RunResult{}, fmt.Errorf("git add: %w: %s", err, out)
+		}
+		cmd = exec.CommandContext(ctx, "git", "-C", req.RepoPath,
+			"-c", "user.name=test",
+			"-c", "user.email=test@example.com",
+			"commit", "-m", "agent commit")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return types.RunResult{}, fmt.Errorf("git commit: %w: %s", err, out)
+		}
+		return res, nil
+	}
+}
+
 // seedReadyIssue inserts a ready-labeled issue and returns it.
 func (h *testHarness) seedReadyIssue(num int, title string, extraLabels ...string) types.Issue {
 	labels := append([]string{h.cfg.Labels.Ready}, extraLabels...)
@@ -472,6 +497,27 @@ func TestHandoffMode(t *testing.T) {
 	job, _ := h.state.Load(8)
 	if job.ApprovalPath != types.ApprovalPathHandoff {
 		t.Fatalf("expected approval_path=handoff, got %q", job.ApprovalPath)
+	}
+}
+
+func TestHandoffModeAgentCommittedDiff(t *testing.T) {
+	h := newTestHarness(t)
+	h.cfg.Approval.Mode = "handoff"
+	o := h.newOrch(t, "x", false)
+
+	h.runner.Responses[types.PhasePlanning] = types.RunResult{Success: true, Text: canonicalPlan([]string{"a.txt"})}
+	committedImplWriter(h.runner, []string{"a.txt"})
+
+	iss := h.seedReadyIssue(18, "agent commits")
+	if err := o.ProcessIssue(context.Background(), iss); err != nil {
+		t.Fatalf("ProcessIssue: %v", err)
+	}
+	if !findLabel(h.labelsFor(18), h.cfg.Labels.PRReady) {
+		t.Fatalf("expected pr-ready, got %v", h.labelsFor(18))
+	}
+	job, _ := h.state.Load(18)
+	if job.PRNumber == 0 {
+		t.Fatalf("expected PR number after committed branch diff")
 	}
 }
 
