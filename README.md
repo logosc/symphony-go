@@ -121,7 +121,10 @@ implementations.
 # 1. Install
 go install ./cmd/symphony-go
 
-# 2. Create config (lives outside the repo on purpose)
+# 2. Create config (lives outside the repo on purpose). Name it after the
+# project — symphony-go reads any path you pass via --config. For a single
+# project, ~/.symphony-go/config.yml is the implicit default. For multiple
+# projects, prefer ~/.symphony-go/<project>.yml and pass --config explicitly.
 mkdir -p ~/.symphony-go
 cp testdata/config.example.yml ~/.symphony-go/config.yml
 # edit repo.full_name, repo.local_path, etc.

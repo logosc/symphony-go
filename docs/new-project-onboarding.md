@@ -156,6 +156,12 @@ cp ~/Documents/Github/symphony-go/testdata/config.example.yml \
 chmod 600 ~/.symphony-go/config.yml
 ```
 
+> **Tip — multi-project setups.** If you run more than one symphony-go
+> instance on the same machine, name each config after its project
+> (e.g. `~/.symphony-go/myproject.yml`) instead of the implicit-default
+> `~/.symphony-go/config.yml`, and always pass `--config <path>`
+> explicitly to disambiguate.
+
 Minimal single-axis config:
 
 ```yaml

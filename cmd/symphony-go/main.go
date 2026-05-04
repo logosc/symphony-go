@@ -63,7 +63,10 @@ usage:
 If --config is omitted, the following are searched in order:
   $SYMPHONY_GO_CONFIG
   $XDG_CONFIG_HOME/symphony-go/config.yml
-  ~/.symphony-go/config.yml`)
+  ~/.symphony-go/config.yml
+
+For multi-project setups, name configs per project (e.g.
+~/.symphony-go/myproject.yml) and always pass --config explicitly.`)
 }
 
 func runCommand(args []string) int {
