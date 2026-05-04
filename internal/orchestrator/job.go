@@ -229,10 +229,12 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		_ = o.runHook(ctx, "after_run.planning", cfg.Hooks.AfterRun, layout, env)
 	}
 	if err != nil {
-		return o.markFailed(ctx, job, fmt.Sprintf("planning agent: %v", err))
+		return o.markFailed(ctx, job, fmt.Sprintf("planning agent: %v\n\n%s", err, summarizeRunFailure(planResult)))
 	}
 	if !planResult.Success {
-		return o.markFailed(ctx, job, "planning agent reported failure")
+		diag := summarizeRunFailure(planResult)
+		log.Warn("planning_failed", "diag", diag)
+		return o.markFailed(ctx, job, "planning agent reported failure\n\n"+diag)
 	}
 
 	// 7. Post plan + parse scope.
@@ -447,18 +449,20 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		_ = o.runHook(ctx, "after_run.implementation", cfg.Hooks.AfterRun, layout, env)
 	}
 	if ierr != nil {
-		return o.markFailed(ctx, job, fmt.Sprintf("implementation agent: %v", ierr))
+		return o.markFailed(ctx, job, fmt.Sprintf("implementation agent: %v\n\n%s", ierr, summarizeRunFailure(implResult)))
 	}
 	if !implResult.Success {
+		diag := summarizeRunFailure(implResult)
+		log.Warn("implementation_failed", "diag", diag)
 		if o.resolveApprovalMode(job, issue.Labels) != "handoff" {
-			return o.markFailed(ctx, job, "implementation agent reported failure")
+			return o.markFailed(ctx, job, "implementation agent reported failure\n\n"+diag)
 		}
 		statusOut, statusErr := gitStatusPorcelain(ctx, layout.RepoPath)
 		if statusErr != nil {
 			return o.markFailed(ctx, job, fmt.Sprintf("git status after failed handoff implementation: %v", statusErr))
 		}
 		if strings.TrimSpace(statusOut) == "" {
-			return o.markFailed(ctx, job, "implementation agent reported failure")
+			return o.markFailed(ctx, job, "implementation agent reported failure\n\n"+diag)
 		}
 		_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number,
 			"[symphony-go] handoff implementation reported failure but produced a diff; continuing to PR for human review.")
@@ -752,6 +756,26 @@ func (o *Orchestrator) markBlocked(ctx context.Context, job *types.Job, reason s
 	job.Status = types.StatusBlocked
 	o.deps.Logger.Warn("blocked", "issue", job.IssueNumber, "reason", reason)
 	return o.saveJob(job)
+}
+
+// summarizeRunFailure returns a short, redacted diagnostic snippet from
+// a failed RunResult, suitable for slog and a GitHub comment. Prefers
+// agent Text (Claude Code emits API errors here as "API Error: 400 ..."
+// in the final result event), falls back to Stderr, then a placeholder.
+// Truncates from the end since errors typically appear last.
+func summarizeRunFailure(r types.RunResult) string {
+	const maxBytes = 1500
+	pick := strings.TrimSpace(r.Text)
+	if pick == "" {
+		pick = strings.TrimSpace(r.Stderr)
+	}
+	if pick == "" {
+		return "(agent produced no output; check tmux log for stderr)"
+	}
+	if len(pick) > maxBytes {
+		pick = "...(truncated)\n" + pick[len(pick)-maxBytes:]
+	}
+	return pick
 }
 
 // markFailed transitions the job to failed, posts a comment, and saves.
