@@ -87,6 +87,26 @@ func TestParseScope_MissingBlockReturnsNilNil(t *testing.T) {
 	}
 }
 
+func TestParseScope_SingleFileFallback(t *testing.T) {
+	body := strings.Join([]string{
+		"**Plan summary / 计划摘要:**",
+		"",
+		"- **Only file touched:** `shopify/CLAUDE.md`",
+		"",
+		"Risk is minimal — doc-only edit.",
+	}, "\n")
+	s, err := ParseScope(body)
+	if err != nil {
+		t.Fatalf("expected nil err, got %v", err)
+	}
+	if s == nil {
+		t.Fatal("expected fallback scope, got nil")
+	}
+	if len(s.FilesTouched) != 1 || s.FilesTouched[0] != "shopify/CLAUDE.md" {
+		t.Errorf("FilesTouched = %v", s.FilesTouched)
+	}
+}
+
 func TestParseScope_MalformedYAML(t *testing.T) {
 	body := "## Scope\nfiles_touched: [a, b\nrisk_summary: x\n"
 	_, err := ParseScope(body)

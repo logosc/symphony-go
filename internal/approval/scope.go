@@ -26,7 +26,7 @@ import (
 func ParseScope(planBody string) (*types.PlanScope, error) {
 	body, found := extractScopeBlock(planBody)
 	if !found {
-		return nil, nil
+		return parseSingleFileFallback(planBody), nil
 	}
 
 	var raw struct {
@@ -52,6 +52,32 @@ func ParseScope(planBody string) (*types.PlanScope, error) {
 		scope.EstimatedLinesRemoved = *raw.EstimatedLinesRemoved
 	}
 	return scope, nil
+}
+
+func parseSingleFileFallback(planBody string) *types.PlanScope {
+	lower := strings.ToLower(planBody)
+	idx := strings.Index(lower, "only file touched")
+	if idx == -1 {
+		return nil
+	}
+	rest := planBody[idx:]
+	firstTick := strings.Index(rest, "`")
+	if firstTick == -1 {
+		return nil
+	}
+	rest = rest[firstTick+1:]
+	secondTick := strings.Index(rest, "`")
+	if secondTick == -1 {
+		return nil
+	}
+	path := strings.TrimSpace(rest[:secondTick])
+	if path == "" || strings.Contains(path, "\n") {
+		return nil
+	}
+	return &types.PlanScope{
+		FilesTouched: []string{path},
+		RiskSummary:  "single-file plan fallback",
+	}
 }
 
 // extractScopeBlock walks planBody line-by-line, finds a heading whose
