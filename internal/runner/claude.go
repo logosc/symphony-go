@@ -297,6 +297,7 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 	var (
 		eventsBuf      bytes.Buffer
 		fallbackText   bytes.Buffer
+		assistantText  bytes.Buffer
 		lastResultText string
 		gotResult      bool
 		sawErrorEvent  bool
@@ -319,6 +320,8 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 		}
 		typ, _ := ev["type"].(string)
 		switch typ {
+		case "assistant":
+			appendClaudeAssistantText(&assistantText, ev)
 		case "result":
 			gotResult = true
 			if s, ok := ev["result"].(string); ok {
@@ -351,8 +354,14 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 
 	if gotResult {
 		result.Text = lastResultText
+		if strings.TrimSpace(result.Text) == "" {
+			result.Text = assistantText.String()
+		}
 	} else {
-		result.Text = fallbackText.String()
+		result.Text = assistantText.String()
+		if strings.TrimSpace(result.Text) == "" {
+			result.Text = fallbackText.String()
+		}
 	}
 	result.Events = append([]byte(nil), eventsBuf.Bytes()...)
 	result.Stderr = exec.Redact(stderrBuf.String()+scanErrSuffix, cr.auditCfg.RedactPatterns)
@@ -374,4 +383,32 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 		return result, nil
 	}
 	return result, nil
+}
+
+func appendClaudeAssistantText(dst *bytes.Buffer, ev map[string]any) {
+	msg, ok := ev["message"].(map[string]any)
+	if !ok {
+		return
+	}
+	content, ok := msg["content"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range content {
+		part, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := part["type"].(string); typ != "text" {
+			continue
+		}
+		text, _ := part["text"].(string)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if dst.Len() > 0 {
+			dst.WriteByte('\n')
+		}
+		dst.WriteString(text)
+	}
 }

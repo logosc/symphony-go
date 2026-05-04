@@ -199,6 +199,31 @@ echo '{"type":"result","result":"final answer here"}'
 	}
 }
 
+func TestClaudeRunUsesAssistantTextWhenResultEmpty(t *testing.T) {
+	dir := t.TempDir()
+	body := `cat >/dev/null
+echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"visible answer"}]}}'
+echo '{"type":"result","result":""}'
+`
+	fake := writeFakeClaude(t, dir, body)
+
+	cr := NewClaudeRunner(newTestAgentCfg(), newTestClaudeCfg(), config.EnvConfig{}, config.AuditConfig{}, WithCommand(fake))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := cr.Run(ctx, types.RunRequest{
+		RepoPath: t.TempDir(),
+		HomePath: t.TempDir(),
+		Phase:    types.PhasePlanning,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Text != "visible answer" {
+		t.Fatalf("expected assistant text fallback, got %q", res.Text)
+	}
+}
+
 func TestClaudeRunErrorEventMarksFailure(t *testing.T) {
 	dir := t.TempDir()
 	body := `cat >/dev/null
