@@ -216,9 +216,14 @@ func (cr *ClaudeRunner) buildArgs(phase types.Phase, axisKey string) []string {
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--model", cr.agentCfg.Model,
 		"--max-turns", fmt.Sprintf("%d", cr.claudeCfg.MaxTurns),
 		"--permission-mode", permissionMode,
+	}
+	// Pass --model only when configured. An empty string makes the
+	// Claude API return 400 "model: String should have at least 1
+	// character"; omitting the flag lets Claude Code pick its default.
+	if cr.agentCfg.Model != "" {
+		args = append(args, "--model", cr.agentCfg.Model)
 	}
 	if len(allowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowedTools, ","))

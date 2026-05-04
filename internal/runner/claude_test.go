@@ -50,9 +50,9 @@ func TestClaudeBuildArgsByPhase(t *testing.T) {
 				"-p",
 				"--output-format", "stream-json",
 				"--verbose",
-				"--model", "sonnet",
 				"--max-turns", "7",
 				"--permission-mode", tc.wantPermission,
+				"--model", "sonnet",
 				"--allowedTools", tc.wantAllowedTools,
 				"--disallowedTools", "Bash(sudo:*),Bash(curl:*)",
 			}
@@ -75,6 +75,25 @@ func TestClaudeBuildArgsByPhase(t *testing.T) {
 // When a `*_tools_by_label` map is set and the request carries an
 // AxisKey, the runner must use the per-axis slice; an empty AxisKey must
 // fall back to the map's "default" entry. When the map is empty, the
+// TestClaudeBuildArgs_EmptyModelOmitted: when agent.model is empty,
+// the runner must NOT pass --model (Claude API rejects empty string
+// values with "model: String should have at least 1 character"). Letting
+// Claude Code pick its default is the right behavior.
+func TestClaudeBuildArgs_EmptyModelOmitted(t *testing.T) {
+	cr := NewClaudeRunner(
+		config.AgentConfig{Model: ""}, // empty
+		config.ClaudeConfig{MaxTurns: 5, PlanningTools: []string{"Read"}},
+		config.EnvConfig{},
+		config.AuditConfig{},
+	)
+	args := cr.buildArgs(types.PhasePlanning, "")
+	for i, a := range args {
+		if a == "--model" {
+			t.Fatalf("argv unexpectedly contains --model (idx=%d, full=%v)", i, args)
+		}
+	}
+}
+
 // scalar slice is used (covered by TestClaudeBuildArgsByPhase).
 func TestClaudeBuildArgsPerAxis(t *testing.T) {
 	cfg := config.ClaudeConfig{
