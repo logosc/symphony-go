@@ -183,7 +183,11 @@ func (cr *ClaudeRunner) buildArgs(phase types.Phase, axisKey string) []string {
 	var byLabel config.OrderedMap[[]string]
 	switch phase {
 	case types.PhasePlanning:
-		permissionMode = "plan"
+		// Planning still needs a file-write tool for symphony-go's
+		// structured side-channel at SYMPHONY_PLAN_SCOPE_PATH. Keep the
+		// tool surface narrow via planning_tools; the workflow prompt
+		// continues to forbid source edits during planning.
+		permissionMode = "acceptEdits"
 		allowedTools = cr.claudeCfg.PlanningTools
 		byLabel = cr.claudeCfg.PlanningToolsByLabel
 	case types.PhaseReview:

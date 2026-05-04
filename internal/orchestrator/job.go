@@ -49,13 +49,19 @@ You are in PLANNING phase. Do not edit any source files in the
 repository. Produce a written plan in markdown — any structure you like
 (headings, tables, bullets, prose).
 
-Before you write the human-readable plan, you MUST write a JSON file at
-the absolute path in the environment variable SYMPHONY_PLAN_SCOPE_PATH
-using your file-write tool. This side-channel file is required for
-approval routing. It is not a source-code edit and it must not be placed
+Before you finish, you MUST write two side-channel files using your
+file-write tool:
+
+1. A JSON scope file at the absolute path in SYMPHONY_PLAN_SCOPE_PATH.
+2. A human-readable Markdown plan at the absolute path in
+   SYMPHONY_PLAN_COMMENT_PATH.
+
+These side-channel files are required for approval routing and issue
+comments. They are not source-code edits and they must not be placed
 inside the repository.
 
-The file must contain only valid JSON with this exact shape:
+SYMPHONY_PLAN_SCOPE_PATH must contain only valid JSON with this exact
+shape:
 
   {
     "files_touched": ["relative/path/one", "relative/path/two"],
@@ -68,6 +74,10 @@ The orchestrator parses this file to gate auto-approval. Be conservative
 in files_touched — list every file you will modify, including generated
 assets and rebuilt bundles. Do not mention that you wrote the side-channel
 file unless there is a problem.
+
+SYMPHONY_PLAN_COMMENT_PATH must contain only the polished, user-facing
+Markdown plan. Do not include tool progress, status narration, or lines
+like "now let me". Write it in English.
 
 Only if your file-write tool is unavailable or the file write fails, fall
 back to ending your markdown with this EXACT raw YAML block (heading on
@@ -188,13 +198,16 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 	planPrompt := rendered + planSuffix
 
-	repoScopeDir := workspace.SanitizeSlug(cfg.Repo.FullName)
-	planScopePath := filepath.Join(os.TempDir(), "symphony-go", repoScopeDir,
+	repoArtifactDir := filepath.Join(os.TempDir(), "symphony-go", workspace.SanitizeSlug(cfg.Repo.FullName))
+	planScopePath := filepath.Join(repoArtifactDir,
 		fmt.Sprintf("issue-%d-attempt-%d-plan-scope.json", issue.Number, job.Attempt))
+	planCommentPath := filepath.Join(repoArtifactDir,
+		fmt.Sprintf("issue-%d-attempt-%d-plan.md", issue.Number, job.Attempt))
 	if err := os.MkdirAll(filepath.Dir(planScopePath), 0o700); err != nil {
-		return o.markBlocked(ctx, job, fmt.Sprintf("prepare plan scope path: %v", err))
+		return o.markBlocked(ctx, job, fmt.Sprintf("prepare plan artifact path: %v", err))
 	}
 	_ = os.Remove(planScopePath) // ensure we don't read a stale file from a prior attempt
+	_ = os.Remove(planCommentPath)
 
 	log.Info("planning_started", "axis_key", job.AxisKey, "axis_source", job.AxisSource)
 	planResult, err := o.runnerForJob(job).Run(ctx, types.RunRequest{
@@ -205,7 +218,10 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		Phase:    types.PhasePlanning,
 		Timeout:  time.Duration(cfg.Agent.TimeoutSeconds) * time.Second,
 		AxisKey:  job.AxisKey,
-		ExtraEnv: []string{"SYMPHONY_PLAN_SCOPE_PATH=" + planScopePath},
+		ExtraEnv: []string{
+			"SYMPHONY_PLAN_SCOPE_PATH=" + planScopePath,
+			"SYMPHONY_PLAN_COMMENT_PATH=" + planCommentPath,
+		},
 	})
 	log.Info("planning_completed", "success", planResult.Success, "err", err)
 	// 6. after_run (logged, status unchanged).
@@ -221,6 +237,12 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 
 	// 7. Post plan + parse scope.
 	planBody := planResult.Text
+	if fileBody, ferr := readSideChannelText(planCommentPath); ferr == nil {
+		planBody = fileBody
+		log.Info("plan_comment_loaded", "source", "file", "bytes", len(fileBody))
+	} else if !os.IsNotExist(ferr) {
+		log.Warn("plan_comment_file_read_failed", "err", ferr)
+	}
 	if cfg.Approval.RequireToken {
 		token, terr := newApprovalToken()
 		if terr != nil {
@@ -239,7 +261,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 			job.PlanCommentID = planComment.ID
 		}
 	}
-	job.PlanText = planResult.Text
+	job.PlanText = planBody
 	// Prefer the side-channel JSON file (proposal 0004); fall back to the
 	// in-prose ## Scope YAML block when the agent didn't write the file or
 	// wrote it malformed.
@@ -777,6 +799,14 @@ planning re-runs (e.g., after a crash + reconcile), so an old approval
 cannot accidentally promote a new plan.
 `, token)
 	return planBody + footer
+}
+
+func readSideChannelText(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // resolveGitHubToken returns a fresh GitHub access token suitable for

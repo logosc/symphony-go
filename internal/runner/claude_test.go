@@ -37,7 +37,7 @@ func TestClaudeBuildArgsByPhase(t *testing.T) {
 		wantPermission   string
 		wantAllowedTools string
 	}{
-		{types.PhasePlanning, "plan", "Read,Grep"},
+		{types.PhasePlanning, "acceptEdits", "Read,Grep"},
 		{types.PhaseReview, "plan", "Read,Glob"},
 		{types.PhaseImplementation, "acceptEdits", "Read,Edit,Write"},
 	}
