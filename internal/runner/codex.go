@@ -165,6 +165,7 @@ func (cr *CodexRunner) Run(ctx context.Context, req types.RunRequest) (types.Run
 	cmd := exec.CommandContext(runCtx, cr.command, argv...)
 	cmd.Dir = req.RepoPath
 	cmd.Env = xexec.BuildAgentEnv(cr.envCfg.Allowlist, cr.envCfg.BlockPatterns, os.Environ(), req.HomePath)
+	cmd.Env = append(cmd.Env, req.ExtraEnv...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
 	cmd.Cancel = func() error {

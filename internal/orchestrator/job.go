@@ -35,28 +35,44 @@ complete and tests pass, write the line ` + "`## Done`" + ` on its own and stop.
 const doneMarker = "## Done"
 
 // planSuffix is appended to the rendered WORKFLOW.md prompt for the
-// planning phase. Tells the agent the `## Scope` block is mandatory and
-// non-negotiable per SPEC §2 plan-output-contract.
+// planning phase. Asks the agent to (1) write a structured JSON file
+// at $SYMPHONY_PLAN_SCOPE_PATH for the orchestrator to parse and (2)
+// produce a freeform markdown plan for humans. Falls back to the
+// in-prose ## Scope YAML contract if the file is missing/malformed
+// (back-compat for older agents). See proposal 0004.
 const planSuffix = `
 
 ---
 
-You are in PLANNING phase. Do not edit any files. Produce a written plan
-in English. Your final lines must be the following EXACT raw YAML block.
-Do not translate, rename, bold, bullet-list, fence, summarize, or paraphrase
-this block. The heading must be exactly ## Scope on its own line. The
-orchestrator parses this block and will reject your plan otherwise:
+You are in PLANNING phase. Do not edit any source files in the
+repository. Produce a written plan in markdown — any structure you like
+(headings, tables, bullets, prose).
+
+Additionally, write a JSON file at the absolute path in the environment
+variable SYMPHONY_PLAN_SCOPE_PATH using your file-write tool. The file
+must have this exact shape:
+
+  {
+    "files_touched": ["relative/path/one", "relative/path/two"],
+    "estimated_lines_added": <int>,
+    "estimated_lines_removed": <int>,
+    "risk_summary": "<one-line note>"
+  }
+
+The orchestrator parses this file to gate auto-approval. Be conservative
+in files_touched — list every file you will modify.
+
+If for any reason you cannot write the JSON file, fall back to ending
+your markdown with this EXACT raw YAML block (heading on its own line,
+no fences, no bold, no bullets):
 
 ## Scope
 files_touched:
   - relative/path/one
-  - relative/path/two
 estimated_lines_added: <int>
 estimated_lines_removed: <int>
 risk_summary: <one-line note>
-
-If you fail to emit this exact block, the run aborts. Be conservative: list
-every file you will modify.`
+`
 
 // implSuffix is appended to the rendered WORKFLOW.md prompt for the
 // implementation phase, with the approved plan quoted in.
@@ -165,6 +181,9 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 	}
 	planPrompt := rendered + planSuffix
 
+	planScopePath := filepath.Join(layout.HomePath, "symphony-plan-scope.json")
+	_ = os.Remove(planScopePath) // ensure we don't read a stale file from a prior attempt
+
 	log.Info("planning_started", "axis_key", job.AxisKey, "axis_source", job.AxisSource)
 	planResult, err := o.runnerForJob(job).Run(ctx, types.RunRequest{
 		Issue:    issue,
@@ -174,6 +193,7 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		Phase:    types.PhasePlanning,
 		Timeout:  time.Duration(cfg.Agent.TimeoutSeconds) * time.Second,
 		AxisKey:  job.AxisKey,
+		ExtraEnv: []string{"SYMPHONY_PLAN_SCOPE_PATH=" + planScopePath},
 	})
 	log.Info("planning_completed", "success", planResult.Success, "err", err)
 	// 6. after_run (logged, status unchanged).
@@ -208,14 +228,30 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		}
 	}
 	job.PlanText = planResult.Text
-	scope, scopeErr := approval.ParseScope(planResult.Text)
-	if scopeErr != nil {
-		log.Warn("scope_parsed: error", "err", scopeErr)
-	} else if scope != nil {
-		log.Info("scope_parsed", "files", len(scope.FilesTouched))
+	// Prefer the side-channel JSON file (proposal 0004); fall back to the
+	// in-prose ## Scope YAML block when the agent didn't write the file or
+	// wrote it malformed.
+	var scope *types.PlanScope
+	if s, ferr := approval.ParseScopeFromFile(planScopePath); ferr == nil {
+		scope = s
+		log.Info("scope_parsed", "source", "file", "files", len(s.FilesTouched))
+	} else if !os.IsNotExist(ferr) {
+		log.Warn("scope_parsed: file malformed, falling back to prose", "err", ferr)
+	}
+	if scope == nil {
+		s, scopeErr := approval.ParseScope(planResult.Text)
+		switch {
+		case scopeErr != nil:
+			log.Warn("scope_parsed: error", "source", "prose", "err", scopeErr)
+		case s != nil:
+			scope = s
+			log.Info("scope_parsed", "source", "prose", "files", len(s.FilesTouched))
+		default:
+			log.Info("scope_parsed: missing")
+		}
+	}
+	if scope != nil {
 		job.PlanScope = scope
-	} else {
-		log.Info("scope_parsed: missing")
 	}
 	if err := o.saveJob(job); err != nil {
 		return err

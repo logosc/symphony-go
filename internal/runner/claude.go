@@ -271,6 +271,7 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 	cmd := osexec.CommandContext(runCtx, cr.command, args...)
 	cmd.Dir = req.RepoPath
 	cmd.Env = exec.BuildAgentEnv(cr.envCfg.Allowlist, cr.envCfg.BlockPatterns, os.Environ(), req.HomePath)
+	cmd.Env = append(cmd.Env, req.ExtraEnv...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
 	cmd.Cancel = func() error {

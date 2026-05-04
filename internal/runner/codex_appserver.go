@@ -207,6 +207,7 @@ func (cr *CodexRunner) openSessionWithWatchdog(ctx context.Context, req types.Ru
 	cmd := osexec.CommandContext(ctx, cr.command, "app-server")
 	cmd.Dir = req.RepoPath
 	cmd.Env = xexec.BuildAgentEnv(cr.envCfg.Allowlist, cr.envCfg.BlockPatterns, os.Environ(), req.HomePath)
+	cmd.Env = append(cmd.Env, req.ExtraEnv...)
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil

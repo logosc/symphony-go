@@ -134,6 +134,12 @@ type RunRequest struct {
 	// honor per-axis tool/sandbox maps key into them with this value
 	// rather than re-resolving from current issue labels (reconcile-safe).
 	AxisKey string
+	// ExtraEnv is appended to the agent's command env after the
+	// allowlist/blocklist sanitizer has run. Each entry is "KEY=VALUE".
+	// Used by the orchestrator to advertise side-channel file paths
+	// (e.g. SYMPHONY_PLAN_SCOPE_PATH) to the agent without coupling them
+	// to the user's env allowlist. See proposal 0004.
+	ExtraEnv []string
 }
 
 // RunResult is what an AgentRunner returns. Stderr and Events are already

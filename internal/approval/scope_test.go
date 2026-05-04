@@ -1,9 +1,83 @@
 package approval
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestParseScopeFromFile_Valid: agent wrote a clean JSON file at the
+// side-channel path; the orchestrator decodes it into a PlanScope.
+// Regression for proposal 0004 phase 1.
+func TestParseScopeFromFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scope.json")
+	if err := os.WriteFile(path, []byte(`{
+  "files_touched": ["a.go", "b.go"],
+  "estimated_lines_added": 10,
+  "estimated_lines_removed": 2,
+  "risk_summary": "low risk"
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ParseScopeFromFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.FilesTouched) != 2 || s.FilesTouched[0] != "a.go" {
+		t.Errorf("FilesTouched = %v", s.FilesTouched)
+	}
+	if s.EstimatedLinesAdded != 10 || s.EstimatedLinesRemoved != 2 {
+		t.Errorf("estimates = +%d -%d", s.EstimatedLinesAdded, s.EstimatedLinesRemoved)
+	}
+	if s.RiskSummary != "low risk" {
+		t.Errorf("RiskSummary = %q", s.RiskSummary)
+	}
+}
+
+// TestParseScopeFromFile_Missing: agent didn't write the file. Caller
+// distinguishes this from "wrote garbage" via os.IsNotExist on the
+// returned error, then falls back to the prose parser.
+func TestParseScopeFromFile_Missing(t *testing.T) {
+	_, err := ParseScopeFromFile(filepath.Join(t.TempDir(), "nope.json"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("expected os.IsNotExist, got %v", err)
+	}
+}
+
+// TestParseScopeFromFile_MalformedJSON: agent wrote the file but the
+// JSON is bad. Returns a non-IsNotExist error.
+func TestParseScopeFromFile_MalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scope.json")
+	if err := os.WriteFile(path, []byte(`{not json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseScopeFromFile(path)
+	if err == nil {
+		t.Fatal("expected error for malformed json")
+	}
+	if os.IsNotExist(err) {
+		t.Errorf("malformed should not look like missing")
+	}
+}
+
+// TestParseScopeFromFile_MissingFilesTouched: required field omitted;
+// must error rather than silently produce an empty scope.
+func TestParseScopeFromFile_MissingFilesTouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scope.json")
+	if err := os.WriteFile(path, []byte(`{"risk_summary": "x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseScopeFromFile(path); err == nil {
+		t.Fatal("expected error for missing files_touched")
+	}
+}
 
 func TestParseScope_ValidBlockAtEnd(t *testing.T) {
 	body := `# Plan

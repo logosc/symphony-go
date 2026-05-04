@@ -7,13 +7,37 @@
 package approval
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/logosc/symphony-go/internal/types"
 )
+
+// ParseScopeFromFile reads a JSON file written by the planning agent
+// (via the SYMPHONY_PLAN_SCOPE_PATH side-channel) and decodes it into
+// a PlanScope. Returns os.IsNotExist-wrapped errors when the file is
+// missing so callers can distinguish "agent didn't write it" from
+// "agent wrote garbage." Returns an error when the file is present
+// but malformed or missing required field files_touched. See
+// proposal 0004.
+func ParseScopeFromFile(path string) (*types.PlanScope, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s types.PlanScope
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, fmt.Errorf("approval: parse scope json: %w", err)
+	}
+	if len(s.FilesTouched) == 0 {
+		return nil, fmt.Errorf("approval: scope json missing required field files_touched")
+	}
+	return &s, nil
+}
 
 // ParseScope extracts the `## Scope` block from a plan body. Returns
 // nil, nil when the block is absent (caller decides fallback). Returns
