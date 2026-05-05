@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"thr_test"}
+this is not json
+{"type":"item.completed","item_type":"agent_message","text":"Recovered after a bogus line."}
+{"type":"turn.completed"}
