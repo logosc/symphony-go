@@ -165,6 +165,18 @@ func TestClaudeBuildArgsOmitsEmptyToolLists(t *testing.T) {
 	}
 }
 
+func TestAdditionalDirsFromEnv(t *testing.T) {
+	got := additionalDirsFromEnv([]string{
+		"SYMPHONY_PLAN_SCOPE_PATH=/tmp/symphony-go/owner-repo/issue-1-scope.json",
+		"SYMPHONY_PLAN_COMMENT_PATH=/tmp/symphony-go/owner-repo/issue-1-plan.md",
+		"OTHER_PATH=/tmp/ignored/file.txt",
+	})
+	want := []string{"/tmp/symphony-go/owner-repo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("additionalDirsFromEnv() = %#v; want %#v", got, want)
+	}
+}
+
 // writeFakeClaude writes a bash script to dir that, when invoked,
 // produces stdout from script body. Returns the absolute path. Skips
 // the test if bash is not in PATH.

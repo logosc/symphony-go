@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -273,6 +274,12 @@ func (cr *ClaudeRunner) Run(ctx context.Context, req types.RunRequest) (types.Ru
 	defer watchdog.Stop()
 
 	args := cr.buildArgs(req.Phase, req.AxisKey)
+	if req.Phase == types.PhasePlanning {
+		if dirs := additionalDirsFromEnv(req.ExtraEnv); len(dirs) > 0 {
+			args = append(args, "--add-dir")
+			args = append(args, dirs...)
+		}
+	}
 
 	startedAt := time.Now()
 	result := types.RunResult{StartedAt: startedAt}
@@ -421,4 +428,28 @@ func appendClaudeAssistantText(dst *bytes.Buffer, ev map[string]any) {
 		}
 		dst.WriteString(text)
 	}
+}
+
+func additionalDirsFromEnv(extraEnv []string) []string {
+	seen := map[string]struct{}{}
+	var dirs []string
+	for _, kv := range extraEnv {
+		key, val, ok := strings.Cut(kv, "=")
+		if !ok || val == "" {
+			continue
+		}
+		switch key {
+		case "SYMPHONY_PLAN_SCOPE_PATH", "SYMPHONY_PLAN_COMMENT_PATH":
+			dir := filepath.Dir(val)
+			if dir == "." || dir == "" {
+				continue
+			}
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			seen[dir] = struct{}{}
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
