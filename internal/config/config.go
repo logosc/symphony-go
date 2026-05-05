@@ -444,7 +444,12 @@ func applyDefaults(cfg *Config) {
 		cfg.Claude.MaxTurns = 20
 	}
 	if cfg.Codex.Mode == "" {
-		cfg.Codex.Mode = "exec"
+		// Default to app-server: matches upstream openai/symphony's
+		// default and avoids stream-idle timeouts on long planning runs.
+		// Operators can opt back into the simpler one-shot subprocess
+		// behavior by setting `codex.mode: "exec"` explicitly.
+		// See proposal 0005 §4.1.
+		cfg.Codex.Mode = "app-server"
 	}
 	if cfg.Hooks.TimeoutSeconds == 0 {
 		cfg.Hooks.TimeoutSeconds = 60

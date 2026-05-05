@@ -96,7 +96,7 @@ claude:
     - "Bash(wget:*)"
 
 codex:
-  mode: "exec"                        # exec | app-server (M7)
+  mode: "app-server"                  # app-server (default, recommended) | exec
   planning_args:       ["--sandbox", "read-only"]
   implementation_args: ["--sandbox", "workspace-write"]
   review_args:         ["--sandbox", "read-only"]

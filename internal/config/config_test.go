@@ -155,8 +155,8 @@ agent:
 	if cfg.Claude.MaxTurns != 20 {
 		t.Errorf("default claude.max_turns: got %d", cfg.Claude.MaxTurns)
 	}
-	if cfg.Codex.Mode != "exec" {
-		t.Errorf("default codex.mode: got %q", cfg.Codex.Mode)
+	if cfg.Codex.Mode != "app-server" {
+		t.Errorf("default codex.mode: got %q, want \"app-server\" (proposal 0005 §4.1)", cfg.Codex.Mode)
 	}
 	if cfg.Hooks.TimeoutSeconds != 60 {
 		t.Errorf("default hooks.timeout_seconds: got %d", cfg.Hooks.TimeoutSeconds)

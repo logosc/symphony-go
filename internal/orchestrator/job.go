@@ -237,6 +237,21 @@ func (o *Orchestrator) ProcessIssue(ctx context.Context, issue types.Issue) erro
 		return o.markFailed(ctx, job, "planning agent reported failure\n\n"+diag)
 	}
 
+	// 6b. Post-planning diff guard (proposal 0005 §4.6). Planning must
+	// not edit source files — WORKFLOW.md forbids it. But the runner's
+	// permission mode may technically allow writes (e.g. claude
+	// --permission-mode acceptEdits, needed for the proposal-0004 side-
+	// channel JSON; codex workspace-write sandbox). Side-channel files
+	// live under HomePath, not RepoPath, so a clean repo after planning
+	// is the right invariant. Fail loudly if the agent edited source.
+	if statusOut, statusErr := gitStatusPorcelain(ctx, layout.RepoPath); statusErr == nil && strings.TrimSpace(statusOut) != "" {
+		log.Warn("planning_edited_source", "status_lines", strings.Count(strings.TrimSpace(statusOut), "\n")+1)
+		return o.markFailed(ctx, job, fmt.Sprintf(
+			"planning agent edited source files (forbidden by WORKFLOW.md). "+
+				"`git status --porcelain` after planning:\n```\n%s```",
+			statusOut))
+	}
+
 	// 7. Post plan + parse scope.
 	planBody := planResult.Text
 	if fileBody, ferr := readSideChannelText(planCommentPath); ferr == nil {
