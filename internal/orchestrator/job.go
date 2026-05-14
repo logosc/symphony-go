@@ -377,6 +377,9 @@ func (o *Orchestrator) routeAuto(ctx context.Context, job *types.Job, issue type
 	log.Info("reviewer_completed", "decision", dec.Decision)
 
 	if dec.Decision == "approve" {
+		reasons := strings.Join(dec.Reasons, "; ")
+		approveBody := fmt.Sprintf("[symphony-go] ✅ reviewer approved the plan: %s", reasons)
+		_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number, approveBody)
 		job.ApprovalPath = types.ApprovalPathReviewer
 		_ = o.saveJob(job)
 		layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
