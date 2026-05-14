@@ -587,6 +587,9 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 	job.PRNumber = pr.Number
 	log.Info("pr_created", "number", pr.Number, "url", pr.URL)
 
+	// 17a. Run code review on the diff (best-effort, non-blocking).
+	o.runPostPRCodeReview(ctx, job, issue, pr.Number)
+
 	// 17. PR-link comment + label.
 	_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number, fmt.Sprintf("[symphony-go] opened PR #%d: %s", pr.Number, pr.URL))
 	if err := o.deps.GitHub.ReplaceStateLabel(ctx, issue.Number,
@@ -1212,3 +1215,90 @@ func (o *Orchestrator) resolveValidationCommands(job *types.Job) ([]string, erro
 }
 
 var _ = errors.New // silence unused import if ever
+
+// runPostPRCodeReview runs the reviewer agent on the actual code diff
+// (not just the plan) and posts the review as a PR comment. This is a
+// best-effort step — failure does not block the PR from being created.
+func (o *Orchestrator) runPostPRCodeReview(ctx context.Context, job *types.Job, issue types.Issue, prNumber int) {
+	log := o.deps.Logger.With("issue", issue.Number, "pr", prNumber)
+	cfg := o.deps.Config
+
+	if o.deps.Reviewer == nil {
+		log.Debug("code_review_skipped", "reason", "no reviewer configured")
+		return
+	}
+
+	layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
+
+	// Get the diff against base branch.
+	diffCmd := exec.CommandContext(ctx, "git", "-C", layout.RepoPath, "diff", cfg.Repo.BaseBranch+"..HEAD")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		log.Warn("code_review_diff_failed", "err", err)
+		return
+	}
+
+	if len(diffOut) == 0 {
+		log.Debug("code_review_skipped", "reason", "empty diff")
+		return
+	}
+
+	// Truncate large diffs to stay within model context limits.
+	diffStr := string(diffOut)
+	if len(diffStr) > 30000 {
+		diffStr = diffStr[:30000] + "\n... (truncated)"
+	}
+
+	// Build a code review prompt (fixed, not user-controlled).
+	prompt := fmt.Sprintf(`You are a code review agent. Review this diff for a GitHub pull request.
+
+Issue: #%d %s
+Description: %s
+
+Diff:
+%s
+
+Review the code for:
+1. Bugs or logic errors
+2. Missing error handling
+3. Style inconsistencies with surrounding code
+4. Test coverage gaps
+5. Security concerns
+
+If the code looks good, say so briefly. If there are issues, list them clearly.
+
+End your response with:
+## Decision
+`+"```json\n"+`{"decision": "approve", "reasons": ["summary of review"]}
+`+"```\n"+`
+Set decision to "approve" if the code is acceptable, or "reject" if changes are needed.
+`, issue.Number, issue.Title, issue.Description, diffStr)
+
+	reviewerHome := filepath.Join(o.deps.WorkspaceRoot, ".symphony-go", "review-homes",
+		fmt.Sprintf("issue-%d-code-review", issue.Number))
+	_ = os.MkdirAll(reviewerHome, 0o755)
+
+	log.Info("code_review_started")
+	result, rerr := o.deps.Reviewer.Review(ctx, approval.ReviewInput{
+		Issue:    issue,
+		PlanText: prompt,
+		RepoPath: layout.RepoPath,
+		HomePath: reviewerHome,
+	})
+
+	if rerr != nil {
+		log.Warn("code_review_failed", "err", rerr)
+		return
+	}
+
+	// Post review as a comment on the PR.
+	reasons := strings.Join(result.Reasons, "\n")
+	var body string
+	if result.Decision == "approve" {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review:** ✅ LGTM\n\n%s", reasons)
+	} else {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review:** ⚠️ Changes Requested\n\n%s", reasons)
+	}
+	_, _ = o.deps.GitHub.PostIssueComment(ctx, prNumber, body)
+	log.Info("code_review_completed", "decision", result.Decision)
+}
