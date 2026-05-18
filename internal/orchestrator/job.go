@@ -981,9 +981,10 @@ func buildPRBody(job *types.Job, results []valResult, workflowEdited bool, proof
 	fmt.Fprintf(&b, "Approval path: `%s`\n\n", job.ApprovalPath)
 	if job.PlanText != "" {
 		planText := strings.TrimSpace(job.PlanText)
-		// The agent may already include a "## Plan" heading in its output.
-		// Only add our own if the text doesn't already start with one.
-		if !strings.HasPrefix(planText, "## Plan") {
+		// The agent may already include a plan heading at any markdown
+		// level (# Plan, ## Plan, ### Plan). Only add our own if the
+		// text doesn't already start with one.
+		if !hasPlanHeading(planText) {
 			b.WriteString("## Plan\n\n")
 		}
 		b.WriteString(planText)
@@ -1224,6 +1225,31 @@ func (o *Orchestrator) resolveValidationCommands(job *types.Job) ([]string, erro
 		return v, nil
 	}
 	return nil, fmt.Errorf("validation.commands_by_label has no entry for %q and no default", axis)
+}
+
+// hasPlanHeading reports whether text starts with a markdown heading
+// containing "Plan" at any level (# Plan, ## Plan, ### Plan, etc.).
+// This prevents buildPRBody from prepending a duplicate heading when the
+// agent already emits one.
+func hasPlanHeading(text string) bool {
+	firstLine := text
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		firstLine = text[:i]
+	}
+	firstLine = strings.TrimSpace(firstLine)
+	// Must start with at least one '#'.
+	if !strings.HasPrefix(firstLine, "#") {
+		return false
+	}
+	// Strip leading '#' characters and require a space after them.
+	stripped := strings.TrimLeft(firstLine, "#")
+	if len(stripped) == 0 || stripped[0] != ' ' {
+		return false
+	}
+	// Check that the heading word is "Plan" — either exactly or followed
+	// by a space (e.g. "## Plan: details"). Rejects "Planning", "Planet".
+	lower := strings.ToLower(strings.TrimSpace(stripped))
+	return lower == "plan" || strings.HasPrefix(lower, "plan ")
 }
 
 var _ = errors.New // silence unused import if ever

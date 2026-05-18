@@ -579,6 +579,21 @@ func TestBuildPRBodyNoDuplicatePlanHeading(t *testing.T) {
 	if !strings.Contains(body2, "## Plan\n\n### Steps") {
 		t.Fatalf("expected '## Plan' heading to be added:\n%s", body2)
 	}
+
+	// When the agent uses "# Plan" (H1), buildPRBody should NOT add a
+	// duplicate heading.
+	job3 := &types.Job{
+		IssueNumber:  44,
+		ApprovalPath: types.ApprovalPathReviewer,
+		PlanText:     "# Plan\n\n## Issue Context\n- details",
+	}
+	body3 := buildPRBody(job3, nil, false, nil)
+	if strings.Contains(body3, "## Plan\n\n# Plan") {
+		t.Fatalf("duplicate heading when agent uses '# Plan':\n%s", body3)
+	}
+	if !strings.Contains(body3, "# Plan\n") {
+		t.Fatalf("expected agent's '# Plan' heading preserved:\n%s", body3)
+	}
 }
 
 func TestEmptyPlanDoesNotPostBlankComment(t *testing.T) {
