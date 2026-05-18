@@ -24,6 +24,7 @@ const (
 	StatusPRReady          JobStatus = "pr_ready"
 	StatusFailed           JobStatus = "failed"
 	StatusBlocked          JobStatus = "blocked"
+	StatusRevising         JobStatus = "revising"
 )
 
 // ApprovalMode is the global approval policy from config.yml.
@@ -107,8 +108,9 @@ type Job struct {
 	// when cfg.Approval.RequireToken is true.
 	ApprovalToken    string            `json:"approval_token,omitempty"`
 	ReviewerDecision *ReviewerDecision `json:"reviewer_decision,omitempty"`
-	PRNumber         int               `json:"pr_number,omitempty"`
-	Attempt          int               `json:"attempt"`
+	PRNumber            int               `json:"pr_number,omitempty"`
+	CodeReviewFeedback  string            `json:"code_review_feedback,omitempty"`
+	Attempt             int               `json:"attempt"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 	// AxisKey is the per-axis label this job was frozen against at claim
 	// time. "default" when no per-axis map is configured or no concrete

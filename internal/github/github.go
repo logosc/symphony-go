@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -64,6 +65,10 @@ type Client interface {
 	// AddReaction adds a reaction (e.g. "+1", "-1", "eyes") to an issue
 	// comment.
 	AddReaction(ctx context.Context, commentID int64, reaction string) error
+	// ClosePR closes an open pull request without merging.
+	ClosePR(ctx context.Context, prNumber int) error
+	// DeleteBranch deletes a remote branch by name.
+	DeleteBranch(ctx context.Context, branch string) error
 }
 
 // realClient is the production go-github-backed Client.
@@ -271,6 +276,7 @@ func normalizePermission(p string) string {
 }
 
 func (r *realClient) CreateDraftPR(ctx context.Context, req CreatePRRequest) (PullRequest, error) {
+	fmt.Fprintf(os.Stderr, "DEBUG CreateDraftPR: owner=%s repo=%s head=%q base=%q\n", r.owner, r.repo, req.Head, req.Base)
 	npr := &gh.NewPullRequest{
 		Title: gh.Ptr(req.Title),
 		Head:  gh.Ptr(req.Head),
@@ -314,6 +320,23 @@ func (r *realClient) FindPRsByHead(ctx context.Context, headBranch string) ([]Pu
 func (r *realClient) AddReaction(ctx context.Context, commentID int64, reaction string) error {
 	if _, _, err := r.c.Reactions.CreateIssueCommentReaction(ctx, r.owner, r.repo, commentID, reaction); err != nil {
 		return fmt.Errorf("github: add reaction %q to comment %d: %w", reaction, commentID, err)
+	}
+	return nil
+}
+
+func (r *realClient) ClosePR(ctx context.Context, prNumber int) error {
+	state := "closed"
+	_, _, err := r.c.PullRequests.Edit(ctx, r.owner, r.repo, prNumber, &gh.PullRequest{State: &state})
+	if err != nil {
+		return fmt.Errorf("github: close PR #%d: %w", prNumber, err)
+	}
+	return nil
+}
+
+func (r *realClient) DeleteBranch(ctx context.Context, branch string) error {
+	_, err := r.c.Git.DeleteRef(ctx, r.owner, r.repo, "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("github: delete branch %q: %w", branch, err)
 	}
 	return nil
 }

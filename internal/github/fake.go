@@ -303,5 +303,22 @@ func copyIssue(i types.Issue) types.Issue {
 	return cp
 }
 
+func (f *InMemoryFake) ClosePR(_ context.Context, prNumber int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, pr := range f.prs {
+		if pr.Number == prNumber {
+			f.prs[i].State = "closed"
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *InMemoryFake) DeleteBranch(_ context.Context, branch string) error {
+	// No-op in fake.
+	return nil
+}
+
 // Compile-time check that InMemoryFake satisfies Client.
 var _ Client = (*InMemoryFake)(nil)

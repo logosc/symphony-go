@@ -377,6 +377,9 @@ func (o *Orchestrator) routeAuto(ctx context.Context, job *types.Job, issue type
 	log.Info("reviewer_completed", "decision", dec.Decision)
 
 	if dec.Decision == "approve" {
+		reasons := strings.Join(dec.Reasons, "; ")
+		body := fmt.Sprintf("[symphony-go] ✅ reviewer approved the plan: %s", reasons)
+		_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number, body)
 		job.ApprovalPath = types.ApprovalPathReviewer
 		_ = o.saveJob(job)
 		layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
@@ -586,6 +589,9 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 	}
 	job.PRNumber = pr.Number
 	log.Info("pr_created", "number", pr.Number, "url", pr.URL)
+
+	// 17a. Run code review on the diff.
+	o.runPostPRCodeReview(ctx, job, issue, pr.Number)
 
 	// 17. PR-link comment + label.
 	_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number, fmt.Sprintf("[symphony-go] opened PR #%d: %s", pr.Number, pr.URL))
@@ -939,18 +945,23 @@ func runGit(ctx context.Context, repoPath string, args ...string) error {
 // push origin <branch>`. The token is passed via -c so it is never written
 // to disk and the command env does not need to inherit GITHUB_TOKEN.
 func DefaultPushFunc(ctx context.Context, repoPath, branch, token string) error {
-	args := []string{"-C", repoPath}
-	if token != "" {
-		args = append(args, "-c", "http.extraheader=AUTHORIZATION: bearer "+token)
-	}
-	args = append(args, "push", "origin", branch)
+	args := []string{"-C", repoPath, "push", "origin", "HEAD:refs/heads/" + branch}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	// Do NOT inherit env (especially GITHUB_TOKEN) — the credential is in args.
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
+	// Let git use the configured credential helper (gh auth git-credential).
+	// Pass through PATH, HOME (for ~/.gitconfig), and proxy/TLS env vars.
+	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
+	for _, key := range []string{"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "NO_PROXY", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "GIT_SSL_CAINFO"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	cmd.Env = env
 	var stderr bytes.Buffer
+	var stdout bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("push: %w: %s", err, stderr.String())
+		return fmt.Errorf("push: %w: stderr=%s stdout=%s", err, stderr.String(), stdout.String())
 	}
 	return nil
 }
@@ -970,13 +981,13 @@ func buildPRBody(job *types.Job, results []valResult, workflowEdited bool, proof
 	fmt.Fprintf(&b, "Resolves #%d.\n\n", job.IssueNumber)
 	fmt.Fprintf(&b, "Approval path: `%s`\n\n", job.ApprovalPath)
 	if job.PlanText != "" {
-		planText := strings.TrimSpace(job.PlanText)
+		planText := job.PlanText
 		// The agent may already include a "## Plan" heading in its output.
 		// Only add our own if the text doesn't already start with one.
-		if !strings.HasPrefix(planText, "## Plan") {
+		if !strings.HasPrefix(strings.TrimSpace(planText), "## Plan") {
 			b.WriteString("## Plan\n\n")
 		}
-		b.WriteString(planText)
+		b.WriteString(strings.TrimSpace(planText))
 		b.WriteString("\n\n")
 	}
 	b.WriteString("## Validation\n\n")
@@ -1217,3 +1228,140 @@ func (o *Orchestrator) resolveValidationCommands(job *types.Job) ([]string, erro
 }
 
 var _ = errors.New // silence unused import if ever
+
+// runPostPRCodeReview runs the reviewer agent on the actual code diff
+// (not just the plan) and posts the review as a PR comment. This is a
+// best-effort step — failure does not block the PR from being created.
+func (o *Orchestrator) runPostPRCodeReview(ctx context.Context, job *types.Job, issue types.Issue, prNumber int) {
+	log := o.deps.Logger.With("issue", issue.Number, "pr", prNumber)
+	cfg := o.deps.Config
+
+	if o.deps.Reviewer == nil {
+		log.Debug("code_review_skipped", "reason", "no reviewer configured")
+		return
+	}
+
+	layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
+
+	// Get the diff
+	diffCmd := exec.CommandContext(ctx, "git", "-C", layout.RepoPath, "diff", cfg.Repo.BaseBranch+"..HEAD")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		log.Warn("code_review_diff_failed", "err", err)
+		return
+	}
+
+	if len(diffOut) == 0 {
+		log.Debug("code_review_skipped", "reason", "empty diff")
+		return
+	}
+
+	// Build a code review prompt (fixed, not user-controlled)
+	diffStr := string(diffOut)
+	if len(diffStr) > 30000 {
+		diffStr = diffStr[:30000] + "\n... (truncated)"
+	}
+
+	prompt := fmt.Sprintf(`You are a code review agent. Review this diff for a GitHub pull request.
+
+Issue: #%d %s
+Description: %s
+
+Diff:
+%s
+
+Review the code for:
+1. Bugs or logic errors
+2. Missing error handling
+3. Style inconsistencies with surrounding code
+4. Test coverage gaps
+5. Security concerns
+
+If the code looks good, say so briefly. If there are issues, list them clearly.
+
+End your response with:
+## Verdict
+Either "LGTM" or "Changes Requested" followed by a short summary.
+`, issue.Number, issue.Title, issue.Description, diffStr)
+
+	reviewerHome := filepath.Join(o.deps.WorkspaceRoot, ".symphony-go", "review-homes",
+		fmt.Sprintf("issue-%d-code-review", issue.Number))
+	_ = os.MkdirAll(reviewerHome, 0o755)
+
+	log.Info("code_review_started")
+	result, rerr := o.deps.Reviewer.Review(ctx, approval.ReviewInput{
+		Issue:    issue,
+		PlanText: prompt, // Reuse plan field to pass the code review prompt
+		RepoPath: layout.RepoPath,
+		HomePath: reviewerHome,
+	})
+
+	if rerr != nil {
+		log.Warn("code_review_failed", "err", rerr)
+		return
+	}
+
+	// Post review as PR comment
+	var body string
+	reasons := strings.Join(result.Reasons, "\n")
+	if result.Decision == "approve" {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review (Claude):** ✅ LGTM\n\n%s", reasons)
+		_, _ = o.deps.GitHub.PostIssueComment(ctx, prNumber, body)
+		log.Info("code_review_completed", "decision", result.Decision)
+	} else {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review (Claude):** ⚠️ Changes Requested\n\n%s", reasons)
+		_, _ = o.deps.GitHub.PostIssueComment(ctx, prNumber, body)
+		log.Info("code_review_completed", "decision", result.Decision)
+
+		// Trigger revision cycle: close PR, store feedback, reset to planning.
+		o.triggerRevision(ctx, job, issue, prNumber, reasons)
+	}
+}
+
+// triggerRevision closes the rejected PR, stores feedback on the issue,
+// and resets the job to planning so the agent can re-implement with the
+// code review feedback visible.
+func (o *Orchestrator) triggerRevision(ctx context.Context, job *types.Job, issue types.Issue, prNumber int, feedback string) {
+	log := o.deps.Logger.With("issue", issue.Number)
+	cfg := o.deps.Config
+
+	// Post feedback to the issue for the next planning cycle.
+	feedbackComment := fmt.Sprintf("[symphony-go] 🔄 Code review requested changes. Re-planning with feedback:\n\n---\n%s\n---", feedback)
+	_, _ = o.deps.GitHub.PostIssueComment(ctx, issue.Number, feedbackComment)
+
+	// Close the PR and delete the remote branch.
+	if err := o.deps.GitHub.ClosePR(ctx, prNumber); err != nil {
+		log.Warn("revision_close_pr_failed", "err", err)
+	}
+	if err := o.deps.GitHub.DeleteBranch(ctx, job.Branch); err != nil {
+		log.Warn("revision_delete_branch_failed", "err", err)
+	}
+
+	// Clean up the local worktree.
+	layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
+	_ = o.removeWorktree(layout.RepoPath)
+
+	// Store feedback and reset state.
+	job.CodeReviewFeedback = feedback
+	job.PRNumber = 0
+	job.Status = types.StatusPlanning
+	job.Attempt++
+	_ = o.saveJob(job)
+
+	// Reset the label so the next reconcile picks it up.
+	_ = o.deps.GitHub.ReplaceStateLabel(ctx, issue.Number,
+		[]string{cfg.Labels.PRReady}, []string{cfg.Labels.Ready})
+
+	log.Info("revision_triggered", "attempt", job.Attempt)
+}
+
+// removeWorktree removes a git worktree by its repo path and cleans up
+// the parent workspace directory.
+func (o *Orchestrator) removeWorktree(repoPath string) error {
+	cfg := o.deps.Config
+	cmd := exec.Command("git", "-C", cfg.Repo.LocalPath, "worktree", "remove", "--force", repoPath)
+	_ = cmd.Run()
+	// Also remove the parent workspace dir (contains home/, repo/, etc.)
+	wsDir := filepath.Dir(repoPath)
+	return os.RemoveAll(wsDir)
+}
