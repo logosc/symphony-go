@@ -37,10 +37,12 @@ type InMemoryFake struct {
 	permissions map[string]string
 	prs         []fakePR
 	reactions   map[int64][]string
+	prReviews   map[int][]PRReview
 
-	// next monotonic IDs for created comments / PRs.
-	nextCommentID int64
-	nextPRNumber  int
+	// next monotonic IDs for created comments / PRs / reviews.
+	nextCommentID  int64
+	nextPRNumber   int
+	nextPRReviewID int64
 }
 
 // NewInMemoryFake constructs an empty InMemoryFake bound to the given
@@ -52,14 +54,16 @@ func NewInMemoryFake(fullName string) *InMemoryFake {
 		panic(err)
 	}
 	return &InMemoryFake{
-		owner:         owner,
-		repo:          repo,
-		issues:        make(map[int]*fakeIssue),
-		comments:      make(map[int][]types.IssueComment),
-		permissions:   make(map[string]string),
-		reactions:     make(map[int64][]string),
-		nextCommentID: 1,
-		nextPRNumber:  1000,
+		owner:          owner,
+		repo:           repo,
+		issues:         make(map[int]*fakeIssue),
+		comments:       make(map[int][]types.IssueComment),
+		permissions:    make(map[string]string),
+		reactions:      make(map[int64][]string),
+		prReviews:      make(map[int][]PRReview),
+		nextCommentID:  1,
+		nextPRNumber:   1000,
+		nextPRReviewID: 1,
 	}
 }
 
@@ -282,6 +286,36 @@ func (f *InMemoryFake) AddReaction(_ context.Context, commentID int64, reaction 
 	defer f.mu.Unlock()
 	f.reactions[commentID] = append(f.reactions[commentID], reaction)
 	return nil
+}
+
+// SeedPRReview appends a review to a PR. If r.ID is zero, a new ID is
+// assigned. If r.SubmittedAt is zero, time.Now() is used.
+func (f *InMemoryFake) SeedPRReview(prNumber int, r PRReview) PRReview {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.ID == 0 {
+		r.ID = f.nextPRReviewID
+		f.nextPRReviewID++
+	} else if r.ID >= f.nextPRReviewID {
+		f.nextPRReviewID = r.ID + 1
+	}
+	if r.SubmittedAt.IsZero() {
+		r.SubmittedAt = time.Now().UTC()
+	}
+	f.prReviews[prNumber] = append(f.prReviews[prNumber], r)
+	return r
+}
+
+// ListPRReviews implements Client. Returned reviews are sorted by
+// SubmittedAt ascending (oldest first).
+func (f *InMemoryFake) ListPRReviews(_ context.Context, prNumber int) ([]PRReview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rs := f.prReviews[prNumber]
+	out := make([]PRReview, len(rs))
+	copy(out, rs)
+	sort.Slice(out, func(i, j int) bool { return out[i].SubmittedAt.Before(out[j].SubmittedAt) })
+	return out, nil
 }
 
 // containsLabel does a case-insensitive lookup in a label slice. The

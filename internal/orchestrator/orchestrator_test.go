@@ -555,6 +555,47 @@ func TestBuildPRBodyIncludesProofArtifacts(t *testing.T) {
 	}
 }
 
+func TestBuildPRBodyNoDuplicatePlanHeading(t *testing.T) {
+	// When the agent includes "## Plan" in its plan text, buildPRBody should
+	// not add a second "## Plan" heading.
+	job := &types.Job{
+		IssueNumber:  42,
+		ApprovalPath: types.ApprovalPathReviewer,
+		PlanText:     "## Plan\n\n### Steps\n- do thing one\n- do thing two",
+	}
+	body := buildPRBody(job, nil, false, nil)
+	count := strings.Count(body, "## Plan")
+	if count != 1 {
+		t.Fatalf("expected exactly 1 '## Plan' heading, got %d:\n%s", count, body)
+	}
+
+	// When the agent does NOT include a heading, buildPRBody should add one.
+	job2 := &types.Job{
+		IssueNumber:  43,
+		ApprovalPath: types.ApprovalPathReviewer,
+		PlanText:     "### Steps\n- do thing one\n- do thing two",
+	}
+	body2 := buildPRBody(job2, nil, false, nil)
+	if !strings.Contains(body2, "## Plan\n\n### Steps") {
+		t.Fatalf("expected '## Plan' heading to be added:\n%s", body2)
+	}
+
+	// When the agent uses "# Plan" (H1), buildPRBody should NOT add a
+	// duplicate heading.
+	job3 := &types.Job{
+		IssueNumber:  44,
+		ApprovalPath: types.ApprovalPathReviewer,
+		PlanText:     "# Plan\n\n## Issue Context\n- details",
+	}
+	body3 := buildPRBody(job3, nil, false, nil)
+	if strings.Contains(body3, "## Plan\n\n# Plan") {
+		t.Fatalf("duplicate heading when agent uses '# Plan':\n%s", body3)
+	}
+	if !strings.Contains(body3, "# Plan\n") {
+		t.Fatalf("expected agent's '# Plan' heading preserved:\n%s", body3)
+	}
+}
+
 func TestEmptyPlanDoesNotPostBlankComment(t *testing.T) {
 	h := newTestHarness(t)
 	h.cfg.Approval.Mode = "handoff"

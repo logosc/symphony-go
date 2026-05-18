@@ -33,6 +33,17 @@ type PullRequest struct {
 	State  string
 }
 
+// PRReview is a normalized PR review returned by Client.ListPRReviews.
+// State is one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED",
+// or "PENDING" (mirroring GitHub's review states).
+type PRReview struct {
+	ID          int64
+	User        string
+	State       string
+	Body        string
+	SubmittedAt time.Time
+}
+
 // Client is the minimal GitHub surface used by symphony-go.
 type Client interface {
 	// ListReadyIssues returns open issues carrying readyLabel. Pull
@@ -61,6 +72,8 @@ type Client interface {
 	// FindPRsByHead lists open PRs whose head branch matches the given
 	// branch name (in the repo's owner namespace).
 	FindPRsByHead(ctx context.Context, headBranch string) ([]PullRequest, error)
+	// ListPRReviews returns every review submitted on a PR, oldest first.
+	ListPRReviews(ctx context.Context, prNumber int) ([]PRReview, error)
 	// AddReaction adds a reaction (e.g. "+1", "-1", "eyes") to an issue
 	// comment.
 	AddReaction(ctx context.Context, commentID int64, reaction string) error
@@ -311,6 +324,28 @@ func (r *realClient) FindPRsByHead(ctx context.Context, headBranch string) ([]Pu
 	return out, nil
 }
 
+func (r *realClient) ListPRReviews(ctx context.Context, prNumber int) ([]PRReview, error) {
+	opts := &gh.ListOptions{PerPage: 100}
+	var out []PRReview
+	for {
+		reviews, resp, err := r.c.PullRequests.ListReviews(ctx, r.owner, r.repo, prNumber, opts)
+		if err != nil {
+			return nil, fmt.Errorf("github: list PR reviews on #%d: %w", prNumber, err)
+		}
+		for _, rv := range reviews {
+			if rv == nil {
+				continue
+			}
+			out = append(out, normalizePRReview(rv))
+		}
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
+}
+
 func (r *realClient) AddReaction(ctx context.Context, commentID int64, reaction string) error {
 	if _, _, err := r.c.Reactions.CreateIssueCommentReaction(ctx, r.owner, r.repo, commentID, reaction); err != nil {
 		return fmt.Errorf("github: add reaction %q to comment %d: %w", reaction, commentID, err)
@@ -366,4 +401,20 @@ func normalizePR(p *gh.PullRequest) PullRequest {
 		URL:    p.GetHTMLURL(),
 		State:  p.GetState(),
 	}
+}
+
+// normalizePRReview converts a go-github *PullRequestReview into PRReview.
+func normalizePRReview(rv *gh.PullRequestReview) PRReview {
+	out := PRReview{
+		ID:    rv.GetID(),
+		Body:  rv.GetBody(),
+		State: rv.GetState(),
+	}
+	if rv.User != nil && rv.User.Login != nil {
+		out.User = *rv.User.Login
+	}
+	if rv.SubmittedAt != nil {
+		out.SubmittedAt = rv.SubmittedAt.Time
+	}
+	return out
 }
