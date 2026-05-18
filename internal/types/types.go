@@ -108,8 +108,13 @@ type Job struct {
 	ApprovalToken    string            `json:"approval_token,omitempty"`
 	ReviewerDecision *ReviewerDecision `json:"reviewer_decision,omitempty"`
 	PRNumber         int               `json:"pr_number,omitempty"`
-	Attempt          int               `json:"attempt"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	// RevisionAttempted is set to true once a single PR-revision cycle has
+	// run on this job (triggered by a CHANGES_REQUESTED review). The
+	// orchestrator only revises a PR once — subsequent CHANGES_REQUESTED
+	// reviews are ignored.
+	RevisionAttempted bool      `json:"revision_attempted,omitempty"`
+	Attempt           int       `json:"attempt"`
+	UpdatedAt         time.Time `json:"updated_at"`
 	// AxisKey is the per-axis label this job was frozen against at claim
 	// time. "default" when no per-axis map is configured or no concrete
 	// label matched. Empty on jobs persisted before the per-axis feature
