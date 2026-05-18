@@ -34,6 +34,9 @@ func (o *Orchestrator) Run(ctx context.Context, once bool) error {
 		if err := o.PollApprovals(ctx); err != nil {
 			o.deps.Logger.Error("tick: PollApprovals", "err", err)
 		}
+		if err := o.PollPRRevisions(ctx); err != nil {
+			o.deps.Logger.Error("tick: PollPRRevisions", "err", err)
+		}
 		max := o.deps.Config.Orchestrator.MaxConcurrentJobs
 		if max < 1 {
 			max = 1
