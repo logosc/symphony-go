@@ -594,7 +594,14 @@ func (o *Orchestrator) runImplementation(ctx context.Context, job *types.Job, is
 		return err
 	}
 	job.Status = types.StatusPRReady
-	return o.saveJob(job)
+	if err := o.saveJob(job); err != nil {
+		return err
+	}
+
+	// 18. Supplementary post-PR code review (best-effort, purely
+	// informational — never mutates job state, even on "reject").
+	o.runPostPRCodeReview(ctx, issue, pr.Number)
+	return nil
 }
 
 // runImplementationAgent drives the implementation phase. When multi-turn
@@ -1212,3 +1219,109 @@ func (o *Orchestrator) resolveValidationCommands(job *types.Job) ([]string, erro
 }
 
 var _ = errors.New // silence unused import if ever
+
+// runPostPRCodeReview runs the reviewer agent on the actual code diff
+// (not just the plan) and posts the review as a PR comment. Purely
+// informational: it never mutates job state and never triggers a
+// revision. A "reject" decision is surfaced as a "Changes Requested"
+// comment for human follow-up; the orchestration state machine is
+// unaffected. The `job` is intentionally not passed in so the function
+// physically cannot mutate it.
+func (o *Orchestrator) runPostPRCodeReview(ctx context.Context, issue types.Issue, prNumber int) {
+	log := o.deps.Logger.With("issue", issue.Number, "pr", prNumber)
+	cfg := o.deps.Config
+
+	if o.deps.Reviewer == nil {
+		log.Debug("code_review_skipped", "reason", "no reviewer configured")
+		return
+	}
+
+	layout := workspace.LayoutFor(o.deps.WorkspaceRoot, issue.Number, workspace.SanitizeSlug(issue.Title))
+
+	// Fetch origin/<base> so the ref is current. Without this, when
+	// multiple jobs run sequentially and earlier PRs get merged between
+	// runs, origin/<base> can be stale, causing the diff to include
+	// commits from previously-merged PRs.
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", layout.RepoPath, "fetch", "origin", cfg.Repo.BaseBranch)
+	if fetchErr := fetchCmd.Run(); fetchErr != nil {
+		log.Warn("code_review_fetch_failed", "err", fetchErr)
+		// Continue anyway — the diff may still be correct if origin/<base> is recent.
+	}
+
+	// Get the diff against base branch (three-dot, origin-prefixed — matches
+	// gitDiffNameOnly and the rest of the codebase).
+	diffCmd := exec.CommandContext(ctx, "git", "-C", layout.RepoPath, "diff", "origin/"+cfg.Repo.BaseBranch+"...HEAD")
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		log.Warn("code_review_diff_failed", "err", err)
+		return
+	}
+
+	if len(diffOut) == 0 {
+		log.Debug("code_review_skipped", "reason", "empty diff")
+		return
+	}
+
+	// Truncate large diffs to stay within model context limits.
+	diffStr := string(diffOut)
+	if len(diffStr) > 30000 {
+		diffStr = diffStr[:30000] + "\n... (truncated)"
+	}
+
+	// Build a code review prompt (fixed, not user-controlled). The trailing
+	// `## Decision` + fenced JSON block matches approval.ParseDecision so
+	// the result can be parsed via the standard reviewer flow.
+	prompt := fmt.Sprintf(`You are a code review agent. Review this diff for a GitHub pull request.
+
+Issue: #%d %s
+Description: %s
+
+Diff:
+%s
+
+Review the code for:
+1. Bugs or logic errors
+2. Missing error handling
+3. Style inconsistencies with surrounding code
+4. Test coverage gaps
+5. Security concerns
+
+If the code looks good, say so briefly. If there are issues, list them clearly.
+
+End your response with:
+
+## Decision
+`+"```json\n"+`{"decision": "approve", "reasons": ["summary"]}
+`+"```\n"+`
+Set decision to "approve" if code is acceptable, "reject" if changes needed.
+`, issue.Number, issue.Title, issue.Description, diffStr)
+
+	reviewerHome := filepath.Join(o.deps.WorkspaceRoot, ".symphony-go", "review-homes",
+		fmt.Sprintf("issue-%d-code-review", issue.Number))
+	_ = os.MkdirAll(reviewerHome, 0o755)
+
+	log.Info("code_review_started")
+	result, rerr := o.deps.Reviewer.Review(ctx, approval.ReviewInput{
+		Issue:    issue,
+		PlanText: prompt,
+		RepoPath: layout.RepoPath,
+		HomePath: reviewerHome,
+	})
+
+	if rerr != nil {
+		log.Warn("code_review_failed", "err", rerr)
+		return
+	}
+
+	// Post review as a comment on the PR. Even a "reject" decision is
+	// purely informational here — no triggerRevision, no state changes.
+	reasons := strings.Join(result.Reasons, "\n")
+	var body string
+	if result.Decision == "approve" {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review:** ✅ LGTM\n\n%s", reasons)
+	} else {
+		body = fmt.Sprintf("[symphony-go] 🔍 **Code Review:** ⚠️ Changes Requested\n\n%s", reasons)
+	}
+	_, _ = o.deps.GitHub.PostIssueComment(ctx, prNumber, body)
+	log.Info("code_review_completed", "decision", result.Decision)
+}
