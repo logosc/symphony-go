@@ -970,8 +970,13 @@ func buildPRBody(job *types.Job, results []valResult, workflowEdited bool, proof
 	fmt.Fprintf(&b, "Resolves #%d.\n\n", job.IssueNumber)
 	fmt.Fprintf(&b, "Approval path: `%s`\n\n", job.ApprovalPath)
 	if job.PlanText != "" {
-		b.WriteString("## Plan\n\n")
-		b.WriteString(job.PlanText)
+		planText := strings.TrimSpace(job.PlanText)
+		// The agent may already include a "## Plan" heading in its output.
+		// Only add our own if the text doesn't already start with one.
+		if !strings.HasPrefix(planText, "## Plan") {
+			b.WriteString("## Plan\n\n")
+		}
+		b.WriteString(planText)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("## Validation\n\n")
